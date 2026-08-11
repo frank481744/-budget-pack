@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#090b0a">
+  <title>BUDGET PACK</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="icon-192.png">
+  <link rel="stylesheet" href="styles.css">
+  <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <div class="brand">BUDGET <span>PACK</span></div>
+      <div id="syncLine" class="tiny">Mode local · prêt à utiliser</div>
+    </div>
+    <button class="iconBtn" id="quickExpenseBtn" aria-label="Ajouter une dépense">＋</button>
+  </header>
+
+  <main>
+    <section class="page active" id="homePage">
+      <div id="overdraftCard"></div>
+      <div class="heroCard">
+        <div class="muted">Disponible budget</div>
+        <div class="heroAmount" id="budgetBalance">$0</div>
+        <div class="heroGrid">
+          <div><span>Jusqu'à prochaine paie</span><strong id="availableUntilPay">$0</strong></div>
+          <div><span>OVER ce mois</span><strong id="overThisMonth">$0</strong></div>
+        </div>
+      </div>
+
+      <div class="stats4">
+        <div class="miniCard"><span>À venir 7 j</span><strong id="bills7">0</strong></div>
+        <div class="miniCard dangerSoft"><span>En retard</span><strong id="lateCount">0</strong></div>
+        <div class="miniCard"><span>Épicerie sem.</span><strong id="groceryWeek">$0</strong></div>
+        <div class="miniCard"><span>Dépenses sem.</span><strong id="spendWeek">$0</strong></div>
+      </div>
+
+      <div class="sectionTitle"><span>Prochains paiements</span><button class="linkBtn" data-go="calendarPage">Voir calendrier</button></div>
+      <div id="homeBills" class="stack"></div>
+
+      <div class="actionGrid">
+        <button class="actionBtn primary" data-add="expense">💸<span>Dépense</span></button>
+        <button class="actionBtn" data-add="income">💵<span>Paie</span></button>
+        <button class="actionBtn" data-add="over">⚡<span>OVER</span></button>
+        <button class="actionBtn" id="affordBtn">🤔<span>Peut-on?</span></button>
+      </div>
+      <div class="sectionTitle"><span>Objectifs / enveloppes</span><button class="linkBtn" data-add="goal">＋ Ajouter</button></div>
+      <div id="homeGoals" class="stack"></div>
+    </section>
+
+    <section class="page" id="calendarPage">
+      <div class="sectionTitle"><span>Calendrier</span><button class="smallBtn" id="addBillBtn">＋ Facture</button></div>
+      <div class="segmented" id="calendarRange">
+        <button class="active" data-days="14">14 jours</button>
+        <button data-days="31">31 jours</button>
+        <button data-days="62">2 mois</button>
+      </div>
+      <div id="calendarList" class="timeline"></div>
+    </section>
+
+    <section class="page" id="addPage">
+      <div class="sectionTitle"><span>Ajouter</span></div>
+      <div class="bigAddList">
+        <button data-add="expense">💸 Ajouter une dépense <b>→</b></button>
+        <button data-add="income">💵 Ajouter une paie <b>→</b></button>
+        <button data-add="over">⚡ Ajouter de l'OVER <b>→</b></button>
+        <button data-add="bill">🧾 Ajouter une facture <b>→</b></button>
+        <button data-add="goal">🎯 Ajouter un objectif <b>→</b></button>
+      </div>
+      <div class="card">
+        <h3>Dépenses rapides</h3>
+        <div id="quickMerchants" class="chips"></div>
+      </div>
+    </section>
+
+    <section class="page" id="historyPage">
+      <div class="sectionTitle"><span>Historique</span></div>
+      <div class="segmented" id="historyFilter">
+        <button class="active" data-filter="all">Tout</button>
+        <button data-filter="expense">Dépenses</button>
+        <button data-filter="income">Paies</button>
+        <button data-filter="bill">Factures</button>
+      </div>
+      <div id="historyList" class="stack"></div>
+    </section>
+
+    <section class="page" id="summaryPage">
+      <div class="sectionTitle"><span>Bilan mensuel</span></div>
+      <div class="monthNav">
+        <button id="prevMonth">‹</button><strong id="summaryMonth"></strong><button id="nextMonth">›</button>
+      </div>
+      <div id="summaryCards" class="summaryGrid"></div>
+      <div class="card"><h3>Catégories</h3><div id="categoryBreakdown"></div></div>
+      <button class="fullBtn primary" id="shareSummary">🤖 Analyser mon mois avec ChatGPT</button>
+      <button class="fullBtn" id="exportBtn">📤 Exporter mes données</button>
+    </section>
+
+    <section class="page" id="settingsPage">
+      <div class="sectionTitle"><span>Paramètres</span></div>
+
+      <div class="card">
+        <h3>Compte budget</h3>
+        <label>Solde de départ<input id="startBalance" inputmode="decimal" type="number" step="0.01"></label>
+        <label>Date du solde<input id="startBalanceDate" type="date"></label>
+        <label>Découvert autorisé<input id="overdraftLimit" inputmode="decimal" type="number" step="1"></label>
+        <label>Budget épicerie / semaine<input id="groceryBudget" inputmode="decimal" type="number" step="1"></label>
+      </div>
+
+      <div class="card">
+        <h3>Budgets par catégorie</h3>
+        <div id="categoryBudgetList"></div>
+        <button id="addCategoryBudgetBtn" class="fullBtn">＋ Ajouter un budget mensuel</button>
+      </div>
+
+      <div class="card">
+        <h3>Rappels anti-oubli</h3>
+        <label class="switchRow"><span>Résumé le dimanche</span><input id="sundayReminder" type="checkbox"></label>
+        <label class="switchRow"><span>Rappel la veille</span><input id="dayBeforeReminder" type="checkbox"></label>
+        <label class="switchRow"><span>Rappel quotidien si en retard</span><input id="lateReminder" type="checkbox"></label>
+        <label>Heure des rappels<input id="reminderHour" type="number" min="0" max="23"></label>
+      </div>
+
+      <div class="card">
+        <h3>Historique</h3>
+        <select id="historyMonths">
+          <option value="12">12 mois détaillés</option>
+          <option value="24">24 mois détaillés</option>
+          <option value="always">Toujours</option>
+        </select>
+        <p class="muted small">Les mois plus vieux sont archivés en résumé plutôt qu'effacés.</p>
+      </div>
+
+      <div class="card">
+        <h3>Apparence — personnelle à ce téléphone</h3>
+        <div class="themeGrid">
+          <button data-theme="beast">🟢 BEAST</button><button data-theme="rose">🌸 Rose</button>
+          <button data-theme="violet">💜 Violet</button><button data-theme="blue">🌊 Bleu</button>
+          <button data-theme="light">🤍 Clair</button><button data-theme="dark">🌑 Noir</button>
+        </div>
+        <label>Couleur personnalisée<input id="customAccent" type="color" value="#7CFF00"></label>
+      </div>
+
+      <div class="card">
+        <h3>Budget partagé iPhone + Samsung</h3>
+        <div id="cloudStatus" class="statusBox">Pas encore connecté — l'app fonctionne localement.</div>
+        <label>Adresse du serveur gratuit Cloudflare<input id="apiUrl" placeholder="https://budget-pack-api....workers.dev"></label>
+        <label>Ton prénom / nom affiché<input id="memberName" placeholder="Francis"></label>
+        <div class="twoBtns">
+          <button id="createFamilyBtn" class="fullBtn primary">Créer notre budget partagé</button>
+          <button id="leaveCloudBtn" class="fullBtn">Déconnecter ce téléphone</button>
+        </div>
+        <label>Code pour rejoindre<input id="joinCode" maxlength="8" placeholder="ABC123"></label>
+        <button id="joinFamilyBtn" class="fullBtn">Rejoindre le budget</button>
+      </div>
+
+      <div class="card">
+        <h3>Notifications</h3>
+        <label>OneSignal App ID<input id="oneSignalAppId" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"></label>
+        <button id="enablePushBtn" class="fullBtn primary">🔔 Activer les notifications</button>
+        <p class="muted small">Sur iPhone, l'app doit être ajoutée à l'écran d'accueil pour recevoir le Web Push.</p>
+      </div>
+
+      <div class="card">
+        <h3>Gestion</h3>
+        <button id="seedBtn" class="fullBtn">Remettre les factures de départ</button>
+        <button id="importBtn" class="fullBtn">📥 Importer une sauvegarde</button>
+        <input id="importFile" type="file" accept="application/json" hidden>
+      </div>
+    </section>
+  </main>
+
+  <nav class="bottomNav">
+    <button class="active" data-page="homePage">⌂<span>Accueil</span></button>
+    <button data-page="calendarPage">▦<span>Calendrier</span></button>
+    <button data-page="addPage" class="navAdd">＋<span>Ajouter</span></button>
+    <button data-page="historyPage">↺<span>Historique</span></button>
+    <button data-page="summaryPage">▥<span>Bilan</span></button>
+    <button data-page="settingsPage">⚙<span>Réglages</span></button>
+  </nav>
+
+  <div class="modalBackdrop hidden" id="modalBackdrop">
+    <div class="modal" id="modal"></div>
+  </div>
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
