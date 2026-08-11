@@ -29,7 +29,7 @@ function seedBills(){
 }
 function defaultState(){
   return {
-    settings:{familyName:"Budget familial",startBalance:0,startBalanceDate:today(),overdraftLimit:1000,groceryBudget:300,categoryBudgets:{},historyMonths:"12",reminderHour:9,sundayReminder:true,dayBeforeReminder:true,lateReminder:true,timezone:"America/Toronto",updatedAt:nowIso()},
+    settings:{familyName:"Budget familial",startBalance:0,startBalanceDate:today(),trackingStartDate:today(),overdraftLimit:1000,groceryBudget:300,categoryBudgets:{},historyMonths:"12",reminderHour:9,sundayReminder:true,dayBeforeReminder:true,lateReminder:true,timezone:"America/Toronto",updatedAt:nowIso()},
     bills:seedBills(),
     transactions:[],
     incomeSchedules:[
@@ -92,6 +92,8 @@ function billOccurrences(bill,from,to){
       d.setMonth(d.getMonth()+1);
     }
   }
+  const activeFrom=bill.activeFrom||state.settings.trackingStartDate||state.settings.startBalanceDate||today();
+  out=out.filter(x=>x>=activeFrom);
   if(bill.endedAt) out=out.filter(x=>x<=bill.endedAt);
   return out;
 }
@@ -274,7 +276,7 @@ function billForm(editId=null){
     <button class="fullBtn primary span2">${b?"Enregistrer":"Ajouter"}</button>
     ${b?`<button type="button" class="fullBtn span2" onclick="BP.endBill('${b.id}')">🏁 Prêt/facture terminé</button>`:""}
   </form>`);
-  $("#billForm").onsubmit=e=>{e.preventDefault();const f=new FormData(e.target);const obj=b||{id:uid("bill"),statuses:{},createdAt:nowIso()};Object.assign(obj,{name:f.get("name"),amount:Number(f.get("amount")),category:f.get("category"),frequency:f.get("frequency"),dueDay:Number(f.get("dueDay")||1),dueDate:f.get("dueDate"),startDate:f.get("dueDate"),variable:f.get("variable")==="on",autopay:f.get("autopay")==="on",active:true,updatedAt:nowIso()});if(!b)state.bills.push(obj);saveState();closeModal();toast(b?"Facture modifiée":"Facture ajoutée")}
+  $("#billForm").onsubmit=e=>{e.preventDefault();const f=new FormData(e.target);const obj=b||{id:uid("bill"),statuses:{},createdAt:nowIso()};Object.assign(obj,{name:f.get("name"),amount:Number(f.get("amount")),category:f.get("category"),frequency:f.get("frequency"),dueDay:Number(f.get("dueDay")||1),dueDate:f.get("dueDate"),startDate:f.get("dueDate"),activeFrom:b?.activeFrom||today(),variable:f.get("variable")==="on",autopay:f.get("autopay")==="on",active:true,updatedAt:nowIso()});if(!b)state.bills.push(obj);saveState();closeModal();toast(b?"Facture modifiée":"Facture ajoutée")}
 }
 function goalForm(){
   openModal(`${modalHeader("Nouvel objectif")}<form id="goalForm"><label>Nom<input name="name" required placeholder="Noël, vacances, urgence..."></label><label>Objectif $<input name="target" type="number" step=".01" required></label><label>Déjà mis de côté<input name="saved" type="number" step=".01" value="0"></label><button class="fullBtn primary">Ajouter</button></form>`);
@@ -406,6 +408,23 @@ function settingsChanged(){
 }
 function goPage(id){$$(".page").forEach(p=>p.classList.toggle("active",p.id===id));$$(".bottomNav button").forEach(b=>b.classList.toggle("active",b.dataset.page===id));scrollTo(0,0)}
 function add(kind){if(kind==="expense")expenseForm();else if(kind==="income"||kind==="over")incomeForm(kind);else if(kind==="bill")billForm();else if(kind==="goal")goalForm()}
+function migrateTrackingStart(){
+  let changed=false;
+  state.settings=state.settings||{};
+  if(!state.settings.trackingStartDate){
+    state.settings.trackingStartDate=today();
+    state.settings.updatedAt=nowIso();
+    changed=true;
+  }
+  (state.bills||[]).forEach(b=>{
+    if(!b.activeFrom){
+      b.activeFrom=state.settings.trackingStartDate;
+      b.updatedAt=nowIso();
+      changed=true;
+    }
+  });
+  if(changed)localStorage.setItem(LS_KEY,JSON.stringify(state));
+}
 function archiveOld(){ // Safe monthly summaries, then detail removal according to preference
   const hm=state.settings.historyMonths;if(hm==="always")return;
   const cutoff=new Date();cutoff.setMonth(cutoff.getMonth()-Number(hm||12));const cut=isoDate(cutoff);
@@ -439,7 +458,7 @@ $("#importBtn").onclick=()=>$("#importFile").click();$("#importFile").onchange=e
 
 window.BP={close:closeModal,payBill,snooze,endBill,quickMerchant:s=>expenseForm(decodeURIComponent(s)),editBill:billForm,addGoalMoney,removeCategoryBudget,editHistory};
 
-initTheme();archiveOld();render();if("serviceWorker" in navigator)navigator.serviceWorker.register("sw.js").catch(()=>{});
+initTheme();migrateTrackingStart();archiveOld();render();if("serviceWorker" in navigator)navigator.serviceWorker.register("sw.js").catch(()=>{});
 if(profile.token)pullCloud();if(profile.oneSignalAppId)initOneSignal();
 setInterval(()=>{if(profile.token&&document.visibilityState==="visible")pullCloud()},30000);
 document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible"&&profile.token)pullCloud()});
