@@ -150,7 +150,7 @@ function availableToPay(){
 }
 
 function render(){
-  renderHome();renderGoals();renderCalendar();renderHistory();renderSummary();renderSettings();renderQuickMerchants();updateSyncLine();
+  renderHome();renderGoals();renderCalendar();renderHistory();renderSummary();renderSettings();renderQuickMerchants();updateSyncLine();ensureNegativeBalanceButton();
 }
 function renderHome(){
   const bal=currentBalance();$("#budgetBalance").textContent=money(bal);$("#availableUntilPay").textContent=money(availableToPay());$("#overThisMonth").textContent=money(overMonth());
@@ -403,6 +403,32 @@ async function enablePush(){
 }
 
 // ----- settings / nav -----
+
+function ensureNegativeBalanceButton(){
+  const input=document.getElementById("startBalance");
+  if(!input || document.getElementById("startBalanceSignBtn")) return;
+  const wrap=document.createElement("div");
+  wrap.style.display="grid";
+  wrap.style.gridTemplateColumns="1fr 54px";
+  wrap.style.gap="8px";
+  wrap.style.alignItems="end";
+  input.parentNode.insertBefore(wrap,input);
+  wrap.appendChild(input);
+  const btn=document.createElement("button");
+  btn.type="button";
+  btn.id="startBalanceSignBtn";
+  btn.className="smallBtn";
+  btn.textContent="±";
+  btn.style.height="44px";
+  btn.style.marginTop="6px";
+  btn.onclick=()=>{
+    input.value=String(-Number(input.value||0));
+    input.dispatchEvent(new Event("change",{bubbles:true}));
+    input.focus();
+  };
+  wrap.appendChild(btn);
+}
+
 function settingsChanged(){
   state.settings.startBalance=Number($("#startBalance").value||0);state.settings.startBalanceDate=$("#startBalanceDate").value||today();state.settings.overdraftLimit=Number($("#overdraftLimit").value||1000);state.settings.groceryBudget=Number($("#groceryBudget").value||0);state.settings.reminderHour=Math.max(0,Math.min(23,Number($("#reminderHour").value||9)));state.settings.sundayReminder=$("#sundayReminder").checked;state.settings.dayBeforeReminder=$("#dayBeforeReminder").checked;state.settings.lateReminder=$("#lateReminder").checked;state.settings.historyMonths=$("#historyMonths").value;touchSettings();saveState()
 }
