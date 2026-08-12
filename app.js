@@ -353,7 +353,11 @@ function importData(file){
 // ----- Cloud sync -----
 function apiBase(){return (profile.apiUrl||"").replace(/\/+$/,"")}
 async function api(path,opts={}){
-  const headers={"Content-Type":"application/json",...(opts.headers||{})};if(profile.token)headers.Authorization=`Bearer ${profile.token}`;
+  const headers={...(opts.headers||{})};
+  // Sans jeton (création/join), text/plain évite le pré-test CORS sur certains navigateurs Android.
+  // Le Worker lit quand même le corps avec request.json().
+  if(opts.body) headers["Content-Type"]=profile.token?"application/json":"text/plain;charset=UTF-8";
+  if(profile.token) headers.Authorization=`Bearer ${profile.token}`;
   const r=await fetch(apiBase()+path,{...opts,headers});const j=await r.json().catch(()=>({}));if(!r.ok){const err=new Error(j.error||`Erreur ${r.status}`);err.status=r.status;err.data=j;throw err}return j
 }
 function mergeById(a=[],b=[]){
