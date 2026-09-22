@@ -151,7 +151,7 @@ function availableToPay(){
 }
 
 function render(){
-  renderHome();renderGoals();renderCalendar();renderHistory();renderSummary();renderSettings();renderQuickMerchants();updateSyncLine();ensureNegativeBalanceButton();ensureNightBalanceHomeButton();
+  renderHome();renderGoals();renderCalendar();renderHistory();renderSummary();renderSettings();renderQuickMerchants();updateSyncLine();ensureNegativeBalanceButton();ensureNightBalanceHomeButton();ensureBudgetImportHomeButton();
 }
 function renderHome(){
   const bal=currentBalance();$("#budgetBalance").textContent=money(bal);$("#availableUntilPay").textContent=money(availableToPay());$("#overThisMonth").textContent=money(overMonth());
@@ -462,6 +462,20 @@ function ensureNightBalanceHomeButton(){
   host.appendChild(btn);
 }
 
+function ensureBudgetImportHomeButton(){
+  if(document.getElementById("budgetImportHomeBtn"))return;
+  const night=document.getElementById("nightBalanceHomeBtn");
+  if(!night||!night.parentNode)return;
+  const btn=document.createElement("button");
+  btn.type="button";
+  btn.id="budgetImportHomeBtn";
+  btn.className="fullBtn";
+  btn.style.marginTop="8px";
+  btn.textContent="📥 Importer un budget";
+  btn.onclick=openBudgetImport;
+  night.parentNode.appendChild(btn);
+}
+
 function ensureBalanceTools(){
   if(document.getElementById("balanceTools"))return;
   const seed=document.getElementById("seedBtn");
@@ -470,10 +484,12 @@ function ensureBalanceTools(){
   box.id="balanceTools";
   box.innerHTML=`
     <button type="button" id="nightBalanceBtn" class="fullBtn primary" style="margin-bottom:10px">🌙 Solde du soir</button>
+    <button type="button" id="budgetImportBtn" class="fullBtn primary" style="margin-bottom:10px">📥 Importer un budget</button>
     <button type="button" id="setCurrentBalanceBtn" class="fullBtn" style="margin-bottom:10px">💰 Définir le solde actuel</button>
     <button type="button" id="restartBudgetBtn" class="fullBtn" style="margin-bottom:10px">🔄 Repartir le budget à zéro</button>`;
   seed.parentNode.insertBefore(box,seed);
   document.getElementById("nightBalanceBtn").onclick=nightBalance;
+  document.getElementById("budgetImportBtn").onclick=openBudgetImport;
   document.getElementById("setCurrentBalanceBtn").onclick=setCurrentBalance;
   document.getElementById("restartBudgetBtn").onclick=restartBudget;
 }
@@ -525,6 +541,162 @@ function nightBalance(){
   });
   saveState();
   toast(`Solde du soir ajusté de +${money(gain)} ✅`);
+}
+
+
+// ----- Import budget depuis ChatGPT / photo mise au propre -----
+function importTextMoney(v){
+  const s=String(v??"").trim().replace(/\s/g,"").replace(/\$/g,"").replace(",",".");
+  const n=Number(s);return Number.isFinite(n)?n:NaN;
+}
+function importKey(v){
+  return String(v??"").trim().normalize("NFD").replace(/[\u0300-\u036f]/g,"").toUpperCase().replace(/[\s-]+/g,"_");
+}
+function importName(v){
+  return String(v??"").trim().normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase().replace(/\s+/g," ");
+}
+function validImportDate(v){return /^\d{4}-\d{2}-\d{2}$/.test(String(v||""))}
+function findBillByImportName(name){return (state.bills||[]).find(b=>!b.deletedAt&&importName(b.name)===importName(name))||null}
+function transactionLooksDuplicate(item){
+  return (state.transactions||[]).some(t=>{
+    if(t.kind!==item.kind||t.date!==item.date||Math.abs(Number(t.amount||0)-Number(item.amount||0))>0.005)return false;
+    const a=item.kind==="expense"?(t.merchant||""):(t.name||"");
+    const b=item.kind==="expense"?(item.merchant||""):(item.name||"");
+    return importName(a)===importName(b);
+  });
+}
+function parseBudgetImport(text){
+  const lines=String(text||"").split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
+  const out={date:today(),items:[],warnings:[],errors:[]};
+  lines.forEach((line,idx)=>{
+    if(line.startsWith("#")||line.startsWith("//"))return;
+    const p=line.split("|").map(x=>x.trim()), type=importKey(p[0]);
+    if(type==="BUDGETPACK"||type==="BUDGET_PACK"){
+      if(p[1]&&validImportDate(p[1]))out.date=p[1];
+      else if(p[1])out.warnings.push(`Ligne ${idx+1}: date d'en-tête ignorée.`);
+      return;
+    }
+    if(type==="SOLDE"){
+      const amount=importTextMoney(p[1]);
+      if(!Number.isFinite(amount))out.errors.push(`Ligne ${idx+1}: solde invalide.`);
+      else out.items.push({type:"balance",amount,line:idx+1});
+      return;
+    }
+    if(type==="REVENU"||type==="PAIE"){
+      const name=p[1]||"Revenu", amount=importTextMoney(p[2]), date=validImportDate(p[3])?p[3]:out.date;
+      if(!Number.isFinite(amount)||amount<0)out.errors.push(`Ligne ${idx+1}: revenu invalide.`);
+      else out.items.push({type:"income",kind:"income",name,amount,date,line:idx+1});
+      return;
+    }
+    if(type==="DEPENSE"||type==="DÉPENSE"){
+      const category=p[1]||"Autre", merchant=p[2]||category||"Dépense", amount=importTextMoney(p[3]), date=validImportDate(p[4])?p[4]:out.date;
+      if(!Number.isFinite(amount)||amount<0)out.errors.push(`Ligne ${idx+1}: dépense invalide.`);
+      else out.items.push({type:"expense",kind:"expense",category,merchant,amount,date,line:idx+1});
+      return;
+    }
+    if(type==="FACTURE"){
+      const name=p[1], amount=importTextMoney(p[2]), rawDue=p[3]||"1", frequency=importKey(p[4]||"monthly").toLowerCase();
+      if(!name||!Number.isFinite(amount)||amount<0){out.errors.push(`Ligne ${idx+1}: facture invalide.`);return}
+      const dueDate=validImportDate(rawDue)?rawDue:"";
+      const dueDay=dueDate?Number(dueDate.slice(8,10)):Math.max(1,Math.min(31,Number(rawDue)||1));
+      const freq=["monthly","weekly","one"].includes(frequency)?frequency:(dueDate?"one":"monthly");
+      out.items.push({type:"bill",name,amount,dueDay,dueDate,frequency:freq,line:idx+1});
+      return;
+    }
+    if(type==="FACTURE_PAYEE"||type==="FACTURE_PAYÉE"||type==="PAIEMENT_FACTURE"){
+      const name=p[1], amount=importTextMoney(p[2]), paidDate=validImportDate(p[3])?p[3]:out.date, dueDate=validImportDate(p[4])?p[4]:paidDate;
+      if(!name||!Number.isFinite(amount)||amount<0)out.errors.push(`Ligne ${idx+1}: facture payée invalide.`);
+      else out.items.push({type:"paidBill",name,amount,date:paidDate,dueDate,line:idx+1});
+      return;
+    }
+    out.warnings.push(`Ligne ${idx+1} ignorée: ${p[0]||"inconnue"}.`);
+  });
+  if(!out.items.length&&!out.errors.length)out.errors.push("Aucune donnée reconnue à importer.");
+  return out;
+}
+function budgetImportItemStatus(item){
+  if(item.type==="income"||item.type==="expense")return transactionLooksDuplicate(item)?"Déjà présente — ignorée":"Sera ajoutée";
+  if(item.type==="balance")return `Solde final sera ajusté à ${money(item.amount)}`;
+  if(item.type==="bill")return findBillByImportName(item.name)?"Facture existante — sera mise à jour":"Nouvelle facture — sera ajoutée";
+  if(item.type==="paidBill"){
+    const b=findBillByImportName(item.name), st=b?.statuses?.[item.dueDate];
+    return st?.paidAt?"Déjà marquée payée — ignorée":(b?"Facture existante — sera marquée payée":"Facture absente — sera créée puis marquée payée");
+  }
+  return "Prête";
+}
+function budgetImportItemHtml(item){
+  let title="",sub="";
+  if(item.type==="income"){title=`💵 ${esc(item.name)} · +${money(item.amount)}`;sub=fmtDate(item.date)}
+  else if(item.type==="expense"){title=`💸 ${esc(item.merchant)} · −${money(item.amount)}`;sub=`${esc(item.category)} · ${fmtDate(item.date)}`}
+  else if(item.type==="balance"){title=`💰 Solde final · ${money(item.amount)}`;sub="Ajustement appliqué après le reste"}
+  else if(item.type==="bill"){title=`🧾 ${esc(item.name)} · ${money(item.amount)}`;sub=`${item.frequency==="monthly"?`Mensuelle · jour ${item.dueDay}`:item.frequency==="weekly"?"Hebdomadaire":`Une fois${item.dueDate?` · ${esc(item.dueDate)}`:""}`}`}
+  else if(item.type==="paidBill"){title=`✅ ${esc(item.name)} · ${money(item.amount)}`;sub=`Payée le ${esc(item.date)}`}
+  return `<div class="card" style="margin-top:8px"><strong>${title}</strong><div class="sub">${sub}</div><div class="sub">${esc(budgetImportItemStatus(item))}</div></div>`;
+}
+function openBudgetImport(){
+  openModal(`${modalHeader("📥 Importer un budget")}<form id="budgetImportForm">
+    <p class="muted small">Colle ici le bloc que ChatGPT t'a préparé après la photo. Rien n'est enregistré avant l'aperçu et ta confirmation.</p>
+    <label>Budget à importer<textarea id="budgetImportText" rows="12" style="width:100%;min-height:220px" placeholder="BUDGETPACK|2026-09-22\nSOLDE|850.25\nREVENU|Ma paie|1250.00\nDEPENSE|Épicerie|Super C|187.42\nFACTURE|Hydro|445|20|monthly"></textarea></label>
+    <button class="fullBtn primary" type="submit">🔎 Vérifier avant d'importer</button>
+    <div id="budgetImportPreview" style="margin-top:12px"></div>
+  </form>`);
+  document.getElementById("budgetImportForm").onsubmit=e=>{
+    e.preventDefault();
+    const parsed=parseBudgetImport(document.getElementById("budgetImportText").value);
+    renderBudgetImportPreview(parsed);
+  };
+}
+function renderBudgetImportPreview(parsed){
+  const host=document.getElementById("budgetImportPreview");if(!host)return;
+  const errs=parsed.errors.length?`<div class="card"><strong class="dangerText">⚠️ À corriger</strong><div class="sub">${parsed.errors.map(esc).join("<br>")}</div></div>`:"";
+  const warns=parsed.warnings.length?`<div class="card"><strong class="warnText">À vérifier</strong><div class="sub">${parsed.warnings.map(esc).join("<br>")}</div></div>`:"";
+  const items=parsed.items.map(budgetImportItemHtml).join("");
+  const dup=parsed.items.filter(x=>(x.type==="income"||x.type==="expense")&&transactionLooksDuplicate(x)).length;
+  host.innerHTML=`${errs}${warns}<div class="card"><strong>Aperçu</strong><div class="sub">${parsed.items.length} élément(s) reconnu(s)${dup?` · ${dup} doublon(s) seront ignorés`:""}. Aucune donnée existante ne sera supprimée.</div></div>${items}${parsed.errors.length?"":`<button type="button" id="confirmBudgetImportBtn" class="fullBtn primary" style="margin-top:12px">✅ Confirmer l'import</button>`}`;
+  const btn=document.getElementById("confirmBudgetImportBtn");if(btn)btn.onclick=()=>applyBudgetImport(parsed);
+}
+function applyBudgetImport(parsed){
+  if(!parsed||parsed.errors?.length)return toast("Corrige les erreurs avant d'importer");
+  let added=0,updated=0,skipped=0,balanceItem=null;
+  parsed.items.forEach(item=>{
+    if(item.type==="balance"){balanceItem=item;return}
+    if(item.type==="income"||item.type==="expense"){
+      if(transactionLooksDuplicate(item)){skipped++;return}
+      if(item.type==="income")state.transactions.unshift({id:uid("tx"),kind:"income",amount:item.amount,date:item.date,name:item.name,memberName:profile.memberName||"Moi",note:"Import Budget Pack depuis ChatGPT",createdAt:nowIso(),updatedAt:nowIso()});
+      else state.transactions.unshift({id:uid("tx"),kind:"expense",amount:item.amount,merchant:item.merchant,category:item.category||"Autre",date:item.date,needFun:"",memberName:profile.memberName||"Moi",note:"Import Budget Pack depuis ChatGPT",createdAt:nowIso(),updatedAt:nowIso()});
+      added++;return;
+    }
+    if(item.type==="bill"){
+      let b=findBillByImportName(item.name);
+      if(b){
+        b.name=item.name;b.amount=item.amount;b.frequency=item.frequency;b.dueDay=item.dueDay;b.variable=!!b.variable;b.active=true;delete b.deletedAt;delete b.endedAt;
+        if(item.dueDate){b.dueDate=item.dueDate;b.startDate=item.dueDate}
+        b.updatedAt=nowIso();updated++;
+      }else{
+        b={id:uid("bill"),name:item.name,amount:item.amount,dueDay:item.dueDay,category:"Facture",frequency:item.frequency,variable:false,autopay:false,active:true,statuses:{},createdAt:nowIso(),updatedAt:nowIso(),activeFrom:item.dueDate||today()};
+        if(item.dueDate){b.dueDate=item.dueDate;b.startDate=item.dueDate}
+        state.bills.push(b);added++;
+      }
+      return;
+    }
+    if(item.type==="paidBill"){
+      let b=findBillByImportName(item.name);
+      if(!b){
+        b={id:uid("bill"),name:item.name,amount:item.amount,dueDay:Number(item.dueDate.slice(8,10))||1,dueDate:item.dueDate,startDate:item.dueDate,category:"Facture",frequency:"one",variable:false,autopay:false,active:true,statuses:{},activeFrom:item.dueDate,createdAt:nowIso(),updatedAt:nowIso()};
+        state.bills.push(b);added++;
+      }
+      b.statuses=b.statuses||{};
+      if(b.statuses[item.dueDate]?.paidAt){skipped++;return}
+      b.statuses[item.dueDate]={...(b.statuses[item.dueDate]||{}),paidAt:`${item.date}T12:00:00`,paidAmount:item.amount,paidBy:profile.memberName||"Moi",updatedAt:nowIso()};
+      b.updatedAt=nowIso();updated++;
+    }
+  });
+  if(balanceItem){
+    const before=currentBalance();
+    state.settings.startBalance=Number(state.settings.startBalance||0)+(Number(balanceItem.amount)-before);
+    touchSettings();updated++;
+  }
+  saveState();closeModal();toast(`Import terminé ✅ ${added} ajouté(s) · ${updated} mis à jour${skipped?` · ${skipped} ignoré(s)`:""}`);
 }
 
 function replaceDisplayedBalance(target){
