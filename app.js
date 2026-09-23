@@ -38,6 +38,7 @@ function defaultState(){
       {id:uid("inc"),name:"Paie conjointe",frequency:"monthly",dueDay:20,amount:3600,active:true,updatedAt:nowIso()}
     ],
     goals:[],
+    monthlyPlans:{},
     archives:{},
     updatedAt:nowIso()
   };
@@ -151,7 +152,7 @@ function availableToPay(){
 }
 
 function render(){
-  renderHome();renderGoals();renderCalendar();renderHistory();renderSummary();renderSettings();renderQuickMerchants();updateSyncLine();ensureNegativeBalanceButton();ensureNightBalanceHomeButton();ensureBudgetImportHomeButton();
+  renderHome();renderGoals();renderCalendar();renderHistory();renderSummary();renderSettings();renderQuickMerchants();updateSyncLine();ensureNegativeBalanceButton();ensureNightBalanceHomeButton();ensureBudgetImportHomeButton();ensureMonthlyPlanHomeButton();
 }
 function renderHome(){
   const bal=currentBalance();$("#budgetBalance").textContent=money(bal);$("#availableUntilPay").textContent=money(availableToPay());$("#overThisMonth").textContent=money(overMonth());
@@ -376,10 +377,18 @@ async function api(path,opts={}){
 function mergeById(a=[],b=[]){
   const m=new Map();[...a,...b].forEach(x=>{const old=m.get(x.id);if(!old||String(x.updatedAt||"")>=String(old.updatedAt||""))m.set(x.id,x)});return [...m.values()]
 }
+function mergeMonthlyPlans(localPlans={},remotePlans={}){
+  const out={...remotePlans};
+  Object.entries(localPlans||{}).forEach(([k,v])=>{
+    const r=out[k];
+    if(!r||String(v?.updatedAt||"")>=String(r?.updatedAt||""))out[k]=v;
+  });
+  return out;
+}
 function mergeState(local,remote){
   if(!remote||!remote.settings)return local;
   const settings=String(local.settings?.updatedAt||"")>=String(remote.settings?.updatedAt||"")?local.settings:remote.settings;
-  return {...remote,...local,settings,bills:mergeById(local.bills,remote.bills),transactions:mergeById(local.transactions,remote.transactions),incomeSchedules:mergeById(local.incomeSchedules,remote.incomeSchedules),goals:mergeById(local.goals,remote.goals),archives:{...(remote.archives||{}),...(local.archives||{})},updatedAt:nowIso()}
+  return {...remote,...local,settings,bills:mergeById(local.bills,remote.bills),transactions:mergeById(local.transactions,remote.transactions),incomeSchedules:mergeById(local.incomeSchedules,remote.incomeSchedules),goals:mergeById(local.goals,remote.goals),monthlyPlans:mergeMonthlyPlans(local.monthlyPlans,remote.monthlyPlans),archives:{...(remote.archives||{}),...(local.archives||{})},updatedAt:nowIso()}
 }
 async function pullCloud(){
   if(!profile.token||!apiBase()||cloudBusy)return;cloudBusy=true;
@@ -476,6 +485,60 @@ function ensureBudgetImportHomeButton(){
   night.parentNode.appendChild(btn);
 }
 
+function ensureMonthlyPlanHomeButton(){
+  if(document.getElementById("monthlyPlanHomeBtn"))return;
+  const imp=document.getElementById("budgetImportHomeBtn");
+  if(!imp||!imp.parentNode)return;
+  const btn=document.createElement("button");
+  btn.type="button";
+  btn.id="monthlyPlanHomeBtn";
+  btn.className="fullBtn";
+  btn.style.marginTop="8px";
+  btn.textContent="📅 Voir budget du mois";
+  btn.onclick=openMonthlyPlan;
+  imp.parentNode.appendChild(btn);
+}
+
+function monthLabel(key){
+  const m=/^(\d{4})-(\d{2})$/.exec(String(key||""));
+  if(!m)return key||"Budget";
+  return new Date(Number(m[1]),Number(m[2])-1,1).toLocaleDateString("fr-CA",{month:"long",year:"numeric"});
+}
+function monthlyPlanKeys(){return Object.keys(state.monthlyPlans||{}).sort()}
+function nearestMonthlyPlanKey(){
+  const keys=monthlyPlanKeys();if(!keys.length)return null;
+  const cur=monthKey(today());
+  return keys.find(k=>k>=cur)||keys[keys.length-1];
+}
+function openMonthlyPlan(key=null){
+  const keys=monthlyPlanKeys();
+  if(!keys.length){
+    openModal(`${modalHeader("📅 Budget du mois")}<div class="card"><strong>Aucun budget mensuel importé.</strong><div class="sub">Envoie-moi la photo du budget papier, puis colle ici le bloc que je te prépare avec le bouton « Importer un budget ».</div></div>`);
+    return;
+  }
+  key=key&&state.monthlyPlans?.[key]?key:nearestMonthlyPlanKey();
+  const plan=state.monthlyPlans[key]||{items:[]};
+  const items=(plan.items||[]).slice().sort((a,b)=>String(a.date||"").localeCompare(String(b.date||"")));
+  const income=items.filter(x=>x.kind==="income").reduce((a,x)=>a+Number(x.amount||0),0);
+  const expense=items.filter(x=>x.kind==="expense").reduce((a,x)=>a+Number(x.amount||0),0);
+  const options=keys.map(k=>`<option value="${esc(k)}" ${k===key?"selected":""}>${esc(monthLabel(k))}</option>`).join("");
+  const groups={};items.forEach(x=>(groups[x.date||`${key}-01`]=groups[x.date||`${key}-01`]||[]).push(x));
+  const rows=Object.entries(groups).map(([date,list])=>{
+    const body=list.map(x=>{
+      if(x.kind==="income")return `<div class="historyRow"><div class="historyMain"><div class="historyTitle">💵 ${esc(x.name)}</div><div class="sub">Prévu</div></div><div class="amount okText">+${money(x.amount)}</div></div>`;
+      if(x.kind==="expense")return `<div class="historyRow"><div class="historyMain"><div class="historyTitle">💸 ${esc(x.name)}</div><div class="sub">${esc(x.category||"Dépense prévue")}</div></div><div class="amount">−${money(x.amount)}</div></div>`;
+      if(x.kind==="remaining")return `<div class="historyRow"><div class="historyMain"><div class="historyTitle">💰 ${esc(x.label||"Restant prévu")}</div><div class="sub">Repère du budget papier</div></div><div class="amount">${money(x.amount)}</div></div>`;
+      return `<div class="historyRow"><div class="historyMain"><div class="historyTitle">📝 ${esc(x.text||x.name||"Note")}</div><div class="sub">Note du budget</div></div></div>`;
+    }).join("");
+    return `<div class="card" style="margin-top:10px"><strong>${esc(fmtDate(date))}</strong>${body}</div>`;
+  }).join("")||`<div class="card muted">Aucune ligne dans ce budget.</div>`;
+  openModal(`${modalHeader("📅 Budget du mois")}
+    <label>Mois<select id="monthlyPlanSelect">${options}</select></label>
+    <div class="card"><div class="catTop"><span>Revenus prévus</span><strong>${money(income)}</strong></div><div class="catTop"><span>Dépenses prévues</span><strong>${money(expense)}</strong></div><div class="catTop"><span>Écart prévu</span><strong>${money(income-expense)}</strong></div><div class="sub" style="margin-top:6px">Ce plan n'affecte jamais ton solde réel. Le solde du soir sert à enregistrer ce qui s'est vraiment passé.</div></div>
+    ${rows}`);
+  const sel=document.getElementById("monthlyPlanSelect");if(sel)sel.onchange=e=>openMonthlyPlan(e.target.value);
+}
+
 function ensureBalanceTools(){
   if(document.getElementById("balanceTools"))return;
   const seed=document.getElementById("seedBtn");
@@ -485,11 +548,13 @@ function ensureBalanceTools(){
   box.innerHTML=`
     <button type="button" id="nightBalanceBtn" class="fullBtn primary" style="margin-bottom:10px">🌙 Solde du soir</button>
     <button type="button" id="budgetImportBtn" class="fullBtn primary" style="margin-bottom:10px">📥 Importer un budget</button>
+    <button type="button" id="monthlyPlanBtn" class="fullBtn" style="margin-bottom:10px">📅 Voir budget du mois</button>
     <button type="button" id="setCurrentBalanceBtn" class="fullBtn" style="margin-bottom:10px">💰 Définir le solde actuel</button>
     <button type="button" id="restartBudgetBtn" class="fullBtn" style="margin-bottom:10px">🔄 Repartir le budget à zéro</button>`;
   seed.parentNode.insertBefore(box,seed);
   document.getElementById("nightBalanceBtn").onclick=nightBalance;
   document.getElementById("budgetImportBtn").onclick=openBudgetImport;
+  document.getElementById("monthlyPlanBtn").onclick=()=>openMonthlyPlan();
   document.getElementById("setCurrentBalanceBtn").onclick=setCurrentBalance;
   document.getElementById("restartBudgetBtn").onclick=restartBudget;
 }
@@ -567,13 +632,42 @@ function transactionLooksDuplicate(item){
 }
 function parseBudgetImport(text){
   const lines=String(text||"").split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
-  const out={date:today(),items:[],warnings:[],errors:[]};
+  const out={date:today(),items:[],warnings:[],errors:[],planMonth:null};
   lines.forEach((line,idx)=>{
     if(line.startsWith("#")||line.startsWith("//"))return;
     const p=line.split("|").map(x=>x.trim()), type=importKey(p[0]);
+    if(type==="BUDGETMOIS"||type==="BUDGET_MOIS"){
+      if(/^\d{4}-\d{2}$/.test(p[1]||""))out.planMonth=p[1];
+      else out.errors.push(`Ligne ${idx+1}: mois invalide. Utilise AAAA-MM.`);
+      return;
+    }
     if(type==="BUDGETPACK"||type==="BUDGET_PACK"){
       if(p[1]&&validImportDate(p[1]))out.date=p[1];
       else if(p[1])out.warnings.push(`Ligne ${idx+1}: date d'en-tête ignorée.`);
+      return;
+    }
+    if(type==="PLAN_REVENU"){
+      const date=p[1],name=p[2]||"Revenu prévu",amount=importTextMoney(p[3]);
+      if(!validImportDate(date)||!Number.isFinite(amount)||amount<0)out.errors.push(`Ligne ${idx+1}: revenu prévu invalide.`);
+      else out.items.push({type:"plan",kind:"income",date,name,amount,line:idx+1});
+      return;
+    }
+    if(type==="PLAN_DEPENSE"||type==="PLAN_DÉPENSE"){
+      const date=p[1],name=p[2]||"Dépense prévue",amount=importTextMoney(p[3]),category=p[4]||"Autre";
+      if(!validImportDate(date)||!Number.isFinite(amount)||amount<0)out.errors.push(`Ligne ${idx+1}: dépense prévue invalide.`);
+      else out.items.push({type:"plan",kind:"expense",date,name,amount,category,line:idx+1});
+      return;
+    }
+    if(type==="PLAN_RESTANT"||type==="PLAN_SOLDE"){
+      const date=p[1],amount=importTextMoney(p[2]),label=p[3]||"Restant prévu";
+      if(!validImportDate(date)||!Number.isFinite(amount))out.errors.push(`Ligne ${idx+1}: restant prévu invalide.`);
+      else out.items.push({type:"plan",kind:"remaining",date,amount,label,line:idx+1});
+      return;
+    }
+    if(type==="PLAN_NOTE"){
+      const date=p[1],text=p.slice(2).join(" | ").trim();
+      if(!validImportDate(date)||!text)out.errors.push(`Ligne ${idx+1}: note prévue invalide.`);
+      else out.items.push({type:"plan",kind:"note",date,text,line:idx+1});
       return;
     }
     if(type==="SOLDE"){
@@ -611,10 +705,13 @@ function parseBudgetImport(text){
     }
     out.warnings.push(`Ligne ${idx+1} ignorée: ${p[0]||"inconnue"}.`);
   });
+  const plans=out.items.filter(x=>x.type==="plan");
+  if(plans.length&&!out.planMonth)out.errors.push("Ajoute BUDGETMOIS|AAAA-MM au début du budget mensuel.");
   if(!out.items.length&&!out.errors.length)out.errors.push("Aucune donnée reconnue à importer.");
   return out;
 }
 function budgetImportItemStatus(item){
+  if(item.type==="plan")return "Prévision seulement — ne change pas le solde réel";
   if(item.type==="income"||item.type==="expense")return transactionLooksDuplicate(item)?"Déjà présente — ignorée":"Sera ajoutée";
   if(item.type==="balance")return `Solde final sera ajusté à ${money(item.amount)}`;
   if(item.type==="bill")return findBillByImportName(item.name)?"Facture existante — sera mise à jour":"Nouvelle facture — sera ajoutée";
@@ -626,7 +723,11 @@ function budgetImportItemStatus(item){
 }
 function budgetImportItemHtml(item){
   let title="",sub="";
-  if(item.type==="income"){title=`💵 ${esc(item.name)} · +${money(item.amount)}`;sub=fmtDate(item.date)}
+  if(item.type==="plan"&&item.kind==="income"){title=`📅 💵 ${esc(item.name)} · +${money(item.amount)}`;sub=`Prévu · ${esc(fmtDate(item.date))}`}
+  else if(item.type==="plan"&&item.kind==="expense"){title=`📅 💸 ${esc(item.name)} · −${money(item.amount)}`;sub=`${esc(item.category||"Autre")} · ${esc(fmtDate(item.date))}`}
+  else if(item.type==="plan"&&item.kind==="remaining"){title=`📅 💰 ${esc(item.label||"Restant prévu")} · ${money(item.amount)}`;sub=`Repère · ${esc(fmtDate(item.date))}`}
+  else if(item.type==="plan"&&item.kind==="note"){title=`📅 📝 ${esc(item.text)}`;sub=`Note · ${esc(fmtDate(item.date))}`}
+  else if(item.type==="income"){title=`💵 ${esc(item.name)} · +${money(item.amount)}`;sub=fmtDate(item.date)}
   else if(item.type==="expense"){title=`💸 ${esc(item.merchant)} · −${money(item.amount)}`;sub=`${esc(item.category)} · ${fmtDate(item.date)}`}
   else if(item.type==="balance"){title=`💰 Solde final · ${money(item.amount)}`;sub="Ajustement appliqué après le reste"}
   else if(item.type==="bill"){title=`🧾 ${esc(item.name)} · ${money(item.amount)}`;sub=`${item.frequency==="monthly"?`Mensuelle · jour ${item.dueDay}`:item.frequency==="weekly"?"Hebdomadaire":`Une fois${item.dueDate?` · ${esc(item.dueDate)}`:""}`}`}
@@ -635,8 +736,8 @@ function budgetImportItemHtml(item){
 }
 function openBudgetImport(){
   openModal(`${modalHeader("📥 Importer un budget")}<form id="budgetImportForm">
-    <p class="muted small">Colle ici le bloc que ChatGPT t'a préparé après la photo. Rien n'est enregistré avant l'aperçu et ta confirmation.</p>
-    <label>Budget à importer<textarea id="budgetImportText" rows="12" style="width:100%;min-height:220px" placeholder="BUDGETPACK|2026-09-22\nSOLDE|850.25\nREVENU|Ma paie|1250.00\nDEPENSE|Épicerie|Super C|187.42\nFACTURE|Hydro|445|20|monthly"></textarea></label>
+    <p class="muted small">Colle ici le bloc que ChatGPT t'a préparé après la photo. Un BUDGETMOIS reste une prévision et ne touche pas au solde réel. Rien n'est enregistré avant l'aperçu et ta confirmation.</p>
+    <label>Budget à importer<textarea id="budgetImportText" rows="12" style="width:100%;min-height:220px" placeholder="BUDGETMOIS|2026-10\nPLAN_REVENU|2026-10-01|Ma paie|760\nPLAN_DEPENSE|2026-10-01|Épicerie|300|Épicerie\nPLAN_RESTANT|2026-10-01|-160|Restant prévu\nPLAN_NOTE|2026-10-13|Prévoir argent pour le permis"></textarea></label>
     <button class="fullBtn primary" type="submit">🔎 Vérifier avant d'importer</button>
     <div id="budgetImportPreview" style="margin-top:12px"></div>
   </form>`);
@@ -652,13 +753,22 @@ function renderBudgetImportPreview(parsed){
   const warns=parsed.warnings.length?`<div class="card"><strong class="warnText">À vérifier</strong><div class="sub">${parsed.warnings.map(esc).join("<br>")}</div></div>`:"";
   const items=parsed.items.map(budgetImportItemHtml).join("");
   const dup=parsed.items.filter(x=>(x.type==="income"||x.type==="expense")&&transactionLooksDuplicate(x)).length;
-  host.innerHTML=`${errs}${warns}<div class="card"><strong>Aperçu</strong><div class="sub">${parsed.items.length} élément(s) reconnu(s)${dup?` · ${dup} doublon(s) seront ignorés`:""}. Aucune donnée existante ne sera supprimée.</div></div>${items}${parsed.errors.length?"":`<button type="button" id="confirmBudgetImportBtn" class="fullBtn primary" style="margin-top:12px">✅ Confirmer l'import</button>`}`;
+  const planCount=parsed.items.filter(x=>x.type==="plan").length;
+  const planMsg=planCount&&parsed.planMonth?`<div class="card"><strong>📅 ${esc(monthLabel(parsed.planMonth))}</strong><div class="sub">${planCount} ligne(s) de prévision. ${state.monthlyPlans?.[parsed.planMonth]?"Le plan déjà enregistré pour ce mois sera remplacé.":"Un nouveau plan mensuel sera créé."} Ces lignes ne changent jamais ton solde réel.</div></div>`:"";
+  host.innerHTML=`${errs}${warns}${planMsg}<div class="card"><strong>Aperçu</strong><div class="sub">${parsed.items.length} élément(s) reconnu(s)${dup?` · ${dup} doublon(s) seront ignorés`:""}. Aucune donnée existante ne sera supprimée, sauf qu'un BUDGETMOIS remplace uniquement le plan du même mois.</div></div>${items}${parsed.errors.length?"":`<button type="button" id="confirmBudgetImportBtn" class="fullBtn primary" style="margin-top:12px">✅ Confirmer l'import</button>`}`;
   const btn=document.getElementById("confirmBudgetImportBtn");if(btn)btn.onclick=()=>applyBudgetImport(parsed);
 }
 function applyBudgetImport(parsed){
   if(!parsed||parsed.errors?.length)return toast("Corrige les erreurs avant d'importer");
-  let added=0,updated=0,skipped=0,balanceItem=null;
+  let added=0,updated=0,skipped=0,balanceItem=null,planSaved=0;
+  const planItems=parsed.items.filter(x=>x.type==="plan");
+  if(planItems.length&&parsed.planMonth){
+    state.monthlyPlans=state.monthlyPlans||{};
+    state.monthlyPlans[parsed.planMonth]={month:parsed.planMonth,items:planItems.map(x=>({...x,id:uid("plan")})),updatedAt:nowIso()};
+    planSaved=planItems.length;
+  }
   parsed.items.forEach(item=>{
+    if(item.type==="plan")return;
     if(item.type==="balance"){balanceItem=item;return}
     if(item.type==="income"||item.type==="expense"){
       if(transactionLooksDuplicate(item)){skipped++;return}
@@ -696,7 +806,9 @@ function applyBudgetImport(parsed){
     state.settings.startBalance=Number(state.settings.startBalance||0)+(Number(balanceItem.amount)-before);
     touchSettings();updated++;
   }
-  saveState();closeModal();toast(`Import terminé ✅ ${added} ajouté(s) · ${updated} mis à jour${skipped?` · ${skipped} ignoré(s)`:""}`);
+  saveState();closeModal();
+  const bits=[];if(planSaved)bits.push(`${planSaved} prévision(s)`);if(added)bits.push(`${added} ajouté(s)`);if(updated)bits.push(`${updated} mis à jour`);if(skipped)bits.push(`${skipped} ignoré(s)`);
+  toast(`Import terminé ✅ ${bits.join(" · ")||"OK"}`);
 }
 
 function replaceDisplayedBalance(target){
@@ -781,7 +893,7 @@ on("addCategoryBudgetBtn","click",addCategoryBudget);
 on("seedBtn","click",()=>{if(confirm("Remettre les factures de départ? Ça n'efface pas tes dépenses.")){state.bills=seedBills();saveState();toast("Factures de départ remises")}});
 on("importBtn","click",()=>$("#importFile")?.click());on("importFile","change",e=>e.target.files[0]&&importData(e.target.files[0]));
 
-window.BP={close:closeModal,payBill,snooze,endBill,deleteBill,quickMerchant:s=>expenseForm(decodeURIComponent(s)),editBill:billForm,addGoalMoney,removeCategoryBudget,editHistory};
+window.BP={close:closeModal,payBill,snooze,endBill,deleteBill,quickMerchant:s=>expenseForm(decodeURIComponent(s)),editBill:billForm,addGoalMoney,removeCategoryBudget,editHistory,openMonthlyPlan};
 
 initTheme();migrateTrackingStart();archiveOld();render();if("serviceWorker" in navigator)navigator.serviceWorker.register("sw.js").catch(()=>{});
 if(profile.token)pullCloud();if(profile.oneSignalAppId)initOneSignal();
