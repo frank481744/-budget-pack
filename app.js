@@ -373,8 +373,28 @@ function afford(){
 }
 function payBill(id,due){
   const b=state.bills.find(x=>x.id===id);if(!b)return;
-  const st=billStatus(b,due), amount=b.variable?prompt(`Montant réellement payé pour ${b.name}`,String(st.paidAmount??b.amount)):String(b.amount);
-  if(amount===null)return;setBillStatus(b,due,{paidAt:nowIso(),paidAmount:Number(amount),paidBy:profile.memberName||"Moi",snoozedUntil:null});toast("Facture payée ✅")
+  const st=billStatus(b,due), planned=Number(st.paidAmount??b.amount??0);
+  let amount=planned;
+
+  // Les paiements provenant du budget mensuel gardent le montant prévu,
+  // mais permettent de confirmer ou corriger le montant réellement payé.
+  if(b.importedMonthlyPlan){
+    const exact=confirm(`🧾 ${b.name}\n\nMontant prévu : ${money(planned)}\n\nAs-tu payé exactement ce montant?\n\nOK = oui\nAnnuler = corriger le montant`);
+    if(!exact){
+      const raw=prompt(`Entre le montant réellement payé pour ${b.name}`,String(planned));
+      if(raw===null)return;
+      amount=importTextMoney(raw);
+      if(!Number.isFinite(amount)||amount<0)return toast("Entre un montant valide");
+    }
+  }else if(b.variable){
+    const raw=prompt(`Montant réellement payé pour ${b.name}`,String(planned));
+    if(raw===null)return;
+    amount=importTextMoney(raw);
+    if(!Number.isFinite(amount)||amount<0)return toast("Entre un montant valide");
+  }
+
+  setBillStatus(b,due,{paidAt:nowIso(),paidAmount:Number(amount),paidBy:profile.memberName||"Moi",snoozedUntil:null});
+  toast(Math.abs(Number(amount)-planned)>0.005?`Paiement réel ${money(amount)} · prévu ${money(planned)} ✅`:"Facture payée ✅")
 }
 function snooze(id,due){
   const b=state.bills.find(x=>x.id===id);if(!b)return;const proposed=addDays(today(),2),d=prompt(`Reporter l'alerte de "${b.name}" jusqu'à quelle date?`,proposed);if(!d)return;
@@ -614,7 +634,12 @@ function openMonthlyPlan(key=null){
       }
       if(x.kind==="expense"){
         const b=operationalBillForPlanItem(x),st=b?billStatus(b,x.date):{},paid=!!st.paidAt;
-        return `<div class="historyRow"><div class="historyMain"><div class="historyTitle">💸 ${esc(x.name)}</div><div class="sub">${esc(x.category||"Dépense prévue")} · ${paid?"✅ Payée":"À payer · rappel actif"}</div></div><div class="amount ${paid?"okText":""}">−${money(x.amount)}</div>${b&&!paid?`<div class="rowActions"><button onclick="BP.payBill('${b.id}','${x.date}')">✅</button></div>`:""}</div>`;
+        const actual=paid?Number(st.paidAmount??x.amount):Number(x.amount||0);
+        const changed=paid&&Math.abs(actual-Number(x.amount||0))>0.005;
+        const sub=paid
+          ? `${esc(x.category||"Dépense prévue")} · ✅ Payée${changed?` · prévu ${money(x.amount)} · réel ${money(actual)}`:""}`
+          : `${esc(x.category||"Dépense prévue")} · À payer · montant prévu ${money(x.amount)}`;
+        return `<div class="historyRow"><div class="historyMain"><div class="historyTitle">💸 ${esc(x.name)}</div><div class="sub">${sub}</div></div><div class="amount ${paid?"okText":""}">−${money(actual)}</div>${b&&!paid?`<div class="rowActions"><button onclick="BP.payBill('${b.id}','${x.date}')">✅</button></div>`:""}</div>`;
       }
       if(x.kind==="remaining")return `<div class="historyRow"><div class="historyMain"><div class="historyTitle">💰 ${esc(x.label||"Restant prévu")}</div><div class="sub">Repère du budget papier</div></div><div class="amount">${money(x.amount)}</div></div>`;
       return `<div class="historyRow"><div class="historyMain"><div class="historyTitle">📝 ${esc(x.text||x.name||"Note")}</div><div class="sub">Note du budget</div></div></div>`;
