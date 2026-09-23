@@ -100,9 +100,11 @@ function billOccurrences(bill,from,to){
   return out;
 }
 function incomeOccurrences(sched,from,to){
-  if(!sched.active)return [];
+  if(!sched.active||sched.deletedAt)return [];
   let out=[];
-  if(sched.frequency==="monthly"){
+  if(sched.frequency==="one"){
+    if(!sched.receivedAt&&sched.dueDate>=from&&sched.dueDate<=to)out=[sched.dueDate];
+  }else if(sched.frequency==="monthly"){
     let d=parseLocal(from),end=parseLocal(to);d.setDate(1);
     while(d<=end){const s=monthlyDate(d.getFullYear(),d.getMonth()+1,sched.dueDay||1);if(s>=from&&s<=to)out.push(s);d.setMonth(d.getMonth()+1)}
   }else if(sched.frequency==="weekly"){
@@ -110,6 +112,7 @@ function incomeOccurrences(sched,from,to){
     while(d.getDay()!==target)d.setDate(d.getDate()+1);
     while(isoDate(d)<=to){out.push(isoDate(d));d.setDate(d.getDate()+7)}
   }
+  out=out.filter(date=>!(sched.coveredDates||{})[date]);
   return out;
 }
 function billStatus(bill,due){return (bill.statuses||{})[due]||{}}
@@ -118,7 +121,11 @@ function setBillStatus(bill,due,patch){
 }
 function dueItems(from=addDays(today(),-30),to=addDays(today(),31)){
   const arr=[];
-  state.bills.forEach(b=>billOccurrences(b,from,to).forEach(due=>arr.push({kind:"bill",bill:b,due,status:billStatus(b,due)})));
+  state.bills.forEach(b=>billOccurrences(b,from,to).forEach(due=>{
+    const status=billStatus(b,due);
+    if(status.coveredByMonthlyPlan)return;
+    arr.push({kind:"bill",bill:b,due,status});
+  }));
   return arr.sort((a,b)=>a.due.localeCompare(b.due));
 }
 function nextPayDate(){
@@ -143,7 +150,15 @@ function currentBalance(){
 function overMonth(key=monthKey(today())){return state.transactions.filter(t=>t.kind==="over"&&monthKey(t.date)===key).reduce((s,t)=>s+Number(t.amount||0),0)}
 function expensesWeek(){
   const d=new Date();const day=(d.getDay()+6)%7;const start=isoDate(new Date(d.getFullYear(),d.getMonth(),d.getDate()-day));const end=addDays(start,6);
-  return state.transactions.filter(t=>t.kind==="expense"&&t.date>=start&&t.date<=end)
+  const out=state.transactions.filter(t=>t.kind==="expense"&&t.date>=start&&t.date<=end).map(t=>({...t}));
+  state.bills.forEach(b=>{
+    if(!b.importedMonthlyPlan)return;
+    Object.entries(b.statuses||{}).forEach(([due,st])=>{
+      const pd=(st.paidAt||"").slice(0,10);
+      if(pd>=start&&pd<=end)out.push({kind:"expense",date:pd,amount:Number(st.paidAmount??b.amount??0),category:b.category||"Autre",merchant:b.name});
+    });
+  });
+  return out;
 }
 function availableToPay(){
   const bal=currentBalance(), np=nextPayDate(), end=np?.date||addDays(today(),14);
@@ -183,7 +198,10 @@ function renderCalendar(){
   events.sort((a,b)=>a.date.localeCompare(b.date));
   $("#calendarList").innerHTML=events.length?events.map(e=>{
     const d=parseLocal(e.date);
-    if(e.type==="income") return `<div class="timelineRow"><div class="timelineDate">${d.toLocaleDateString("fr-CA",{weekday:"short"})}<b>${d.getDate()}</b></div><div class="historyMain"><div class="historyTitle">💵 ${esc(e.sched.name)}</div><div class="sub">${e.sched.amount==null?"Montant à entrer":money(e.sched.amount)}</div></div></div>`;
+    if(e.type==="income"){
+      const received=!!e.sched.receivedAt;
+      return `<div class="timelineRow"><div class="timelineDate">${d.toLocaleDateString("fr-CA",{weekday:"short"})}<b>${d.getDate()}</b></div><div class="historyMain"><div class="historyTitle">💵 ${esc(e.sched.name)}</div><div class="sub">${received?"Reçue":(e.sched.amount==null?"Montant à entrer":money(e.sched.amount))}</div></div>${e.sched.amount!=null?`<div class="amount ${received?"okText":""}">${money(e.sched.receivedAmount??e.sched.amount)}</div>`:""}${e.sched.importedMonthlyPlan&&!received?`<div class="rowActions"><button onclick="BP.receiveIncome('${e.sched.id}','${e.date}')" title="Marquer reçue">✅</button></div>`:""}</div>`;
+    }
     const st=e.x.status, paid=!!st.paidAt;
     return `<div class="timelineRow"><div class="timelineDate">${d.toLocaleDateString("fr-CA",{weekday:"short"})}<b>${d.getDate()}</b></div><div class="historyMain"><div class="historyTitle">🧾 ${esc(e.x.bill.name)}</div><div class="sub">${paid?"Payée":(st.snoozedUntil?`Reportée au ${fmtDate(st.snoozedUntil)}`:"À payer")}</div></div><div class="amount ${paid?"okText":""}">${money(st.paidAmount??e.x.bill.amount)}</div><div class="rowActions"><button onclick="BP.editBill('${e.x.bill.id}')" title="Modifier">✏️</button><button onclick="BP.deleteBill('${e.x.bill.id}')" title="Supprimer">🗑️</button></div></div>`;
   }).join(""):`<div class="card muted">Rien à afficher.</div>`;
@@ -191,7 +209,7 @@ function renderCalendar(){
 function historyItems(){
   const arr=[];
   state.transactions.forEach(t=>arr.push({date:t.date,kind:t.kind,id:t.id,title:t.merchant||t.name||(t.kind==="income"?"Paie":"OVER"),amount:t.amount,category:t.category,member:t.memberName,note:t.note,raw:t}));
-  state.bills.forEach(b=>Object.entries(b.statuses||{}).forEach(([due,st])=>{if(st.paidAt)arr.push({date:st.paidAt.slice(0,10),kind:"bill",id:`${b.id}|${due}`,title:b.name,amount:st.paidAmount??b.amount,category:"Facture",member:st.paidBy,note:`Échéance ${due}`,raw:{bill:b,due,st}})}));
+  state.bills.forEach(b=>Object.entries(b.statuses||{}).forEach(([due,st])=>{if(st.paidAt)arr.push({date:st.paidAt.slice(0,10),kind:"bill",id:`${b.id}|${due}`,title:b.name,amount:st.paidAmount??b.amount,category:b.category||"Facture",member:st.paidBy,note:`Échéance ${due}`,raw:{bill:b,due,st}})}));
   return arr.sort((a,b)=>b.date.localeCompare(a.date));
 }
 function renderHistory(){
@@ -202,7 +220,7 @@ function monthData(key){
   const tx=state.transactions.filter(t=>monthKey(t.date)===key), bills=[];
   state.bills.forEach(b=>Object.entries(b.statuses||{}).forEach(([due,st])=>{if(st.paidAt&&monthKey(st.paidAt)===key)bills.push({bill:b,due,st})}));
   const income=tx.filter(t=>t.kind==="income").reduce((s,t)=>s+Number(t.amount||0),0), over=tx.filter(t=>t.kind==="over").reduce((s,t)=>s+Number(t.amount||0),0), expenses=tx.filter(t=>t.kind==="expense").reduce((s,t)=>s+Number(t.amount||0),0), billPaid=bills.reduce((s,x)=>s+Number(x.st.paidAmount??x.bill.amount??0),0);
-  const cats={};tx.filter(t=>t.kind==="expense").forEach(t=>cats[t.category||"Autre"]=(cats[t.category||"Autre"]||0)+Number(t.amount||0));bills.forEach(x=>cats["Factures"]=(cats["Factures"]||0)+Number(x.st.paidAmount??x.bill.amount??0));
+  const cats={};tx.filter(t=>t.kind==="expense").forEach(t=>cats[t.category||"Autre"]=(cats[t.category||"Autre"]||0)+Number(t.amount||0));bills.forEach(x=>{const k=(x.bill.category&&x.bill.category!=="Facture")?x.bill.category:"Factures";cats[k]=(cats[k]||0)+Number(x.st.paidAmount??x.bill.amount??0)});
   let minBal=null,negDays=0;
   const first=`${key}-01`,last=monthlyDate(Number(key.slice(0,4)),Number(key.slice(5,7)),31);
   let b=Number(state.settings.startBalance||0); // approximation month path from start
@@ -510,6 +528,12 @@ function nearestMonthlyPlanKey(){
   const cur=monthKey(today());
   return keys.find(k=>k>=cur)||keys[keys.length-1];
 }
+function operationalBillForPlanItem(item){
+  return (state.bills||[]).find(b=>b.importedMonthlyPlan&&b.sourcePlanItemId===item.id&&!b.deletedAt)||null;
+}
+function operationalIncomeForPlanItem(item){
+  return (state.incomeSchedules||[]).find(x=>x.importedMonthlyPlan&&x.sourcePlanItemId===item.id&&!x.deletedAt)||null;
+}
 function openMonthlyPlan(key=null){
   const keys=monthlyPlanKeys();
   if(!keys.length){
@@ -525,8 +549,14 @@ function openMonthlyPlan(key=null){
   const groups={};items.forEach(x=>(groups[x.date||`${key}-01`]=groups[x.date||`${key}-01`]||[]).push(x));
   const rows=Object.entries(groups).map(([date,list])=>{
     const body=list.map(x=>{
-      if(x.kind==="income")return `<div class="historyRow"><div class="historyMain"><div class="historyTitle">💵 ${esc(x.name)}</div><div class="sub">Prévu</div></div><div class="amount okText">+${money(x.amount)}</div></div>`;
-      if(x.kind==="expense")return `<div class="historyRow"><div class="historyMain"><div class="historyTitle">💸 ${esc(x.name)}</div><div class="sub">${esc(x.category||"Dépense prévue")}</div></div><div class="amount">−${money(x.amount)}</div></div>`;
+      if(x.kind==="income"){
+        const sched=operationalIncomeForPlanItem(x),received=!!sched?.receivedAt;
+        return `<div class="historyRow"><div class="historyMain"><div class="historyTitle">💵 ${esc(x.name)}</div><div class="sub">${received?"✅ Reçue":"Prévue · enregistrée au calendrier"}</div></div><div class="amount ${received?"okText":""}">+${money(x.amount)}</div>${sched&&!received?`<div class="rowActions"><button onclick="BP.receiveIncome('${sched.id}','${x.date}')">✅</button></div>`:""}</div>`;
+      }
+      if(x.kind==="expense"){
+        const b=operationalBillForPlanItem(x),st=b?billStatus(b,x.date):{},paid=!!st.paidAt;
+        return `<div class="historyRow"><div class="historyMain"><div class="historyTitle">💸 ${esc(x.name)}</div><div class="sub">${esc(x.category||"Dépense prévue")} · ${paid?"✅ Payée":"À payer · rappel actif"}</div></div><div class="amount ${paid?"okText":""}">−${money(x.amount)}</div>${b&&!paid?`<div class="rowActions"><button onclick="BP.payBill('${b.id}','${x.date}')">✅</button></div>`:""}</div>`;
+      }
       if(x.kind==="remaining")return `<div class="historyRow"><div class="historyMain"><div class="historyTitle">💰 ${esc(x.label||"Restant prévu")}</div><div class="sub">Repère du budget papier</div></div><div class="amount">${money(x.amount)}</div></div>`;
       return `<div class="historyRow"><div class="historyMain"><div class="historyTitle">📝 ${esc(x.text||x.name||"Note")}</div><div class="sub">Note du budget</div></div></div>`;
     }).join("");
@@ -534,7 +564,7 @@ function openMonthlyPlan(key=null){
   }).join("")||`<div class="card muted">Aucune ligne dans ce budget.</div>`;
   openModal(`${modalHeader("📅 Budget du mois")}
     <label>Mois<select id="monthlyPlanSelect">${options}</select></label>
-    <div class="card"><div class="catTop"><span>Revenus prévus</span><strong>${money(income)}</strong></div><div class="catTop"><span>Dépenses prévues</span><strong>${money(expense)}</strong></div><div class="catTop"><span>Écart prévu</span><strong>${money(income-expense)}</strong></div><div class="sub" style="margin-top:6px">Ce plan n'affecte jamais ton solde réel. Le solde du soir sert à enregistrer ce qui s'est vraiment passé.</div></div>
+    <div class="card"><div class="catTop"><span>Revenus prévus</span><strong>${money(income)}</strong></div><div class="catTop"><span>Dépenses prévues</span><strong>${money(expense)}</strong></div><div class="catTop"><span>Écart prévu</span><strong>${money(income-expense)}</strong></div><div class="sub" style="margin-top:6px">Les dépenses du plan sont aussi créées comme paiements à la bonne date : rappels, bouton ✅ Payé, historique et solde fonctionnent ensemble. Les paies prévues restent hors du solde jusqu'à ce que tu les marques reçues.</div></div>
     ${rows}`);
   const sel=document.getElementById("monthlyPlanSelect");if(sel)sel.onchange=e=>openMonthlyPlan(e.target.value);
 }
@@ -608,6 +638,122 @@ function nightBalance(){
   toast(`Solde du soir ajusté de +${money(gain)} ✅`);
 }
 
+
+
+// ----- Liaison automatique Budget du mois -> factures / paies -----
+function nextMonthStart(key){
+  const m=/^(\d{4})-(\d{2})$/.exec(String(key||""));if(!m)return null;
+  const d=new Date(Number(m[1]),Number(m[2]),1);return isoDate(d);
+}
+function clearMonthlyPlanCoverage(month){
+  let changed=false;
+  (state.bills||[]).forEach(b=>{
+    Object.keys(b.statuses||{}).forEach(due=>{
+      const st=b.statuses[due];
+      if(st?.coveredByMonthlyPlan===month){
+        const copy={...st};
+        if(copy.planSnoozedUntil&&copy.snoozedUntil===copy.planSnoozedUntil)delete copy.snoozedUntil;
+        delete copy.planSnoozedUntil;delete copy.coveredByMonthlyPlan;delete copy.coveredByPlanItemId;
+        if(!Object.keys(copy).length)delete b.statuses[due];else b.statuses[due]=copy;
+        b.updatedAt=nowIso();changed=true;
+      }
+    });
+  });
+  (state.incomeSchedules||[]).forEach(x=>{
+    if(!x.coveredDates)return;
+    Object.keys(x.coveredDates).forEach(date=>{if(x.coveredDates[date]===month){delete x.coveredDates[date];x.updatedAt=nowIso();changed=true}});
+  });
+  return changed;
+}
+function coverRecurringTemplateForPlanItem(item,month){
+  const template=(state.bills||[]).find(b=>!b.deletedAt&&!b.importedMonthlyPlan&&b.frequency!=="one"&&importName(b.name)===importName(item.name));
+  if(!template)return false;
+  let due="";
+  if(template.frequency==="monthly")due=monthlyDate(Number(month.slice(0,4)),Number(month.slice(5,7)),template.dueDay||1);
+  else if(template.frequency==="weekly")due=item.date;
+  if(!due)return false;
+  template.statuses=template.statuses||{};
+  const old=template.statuses[due]||{}, until=nextMonthStart(month);
+  if(old.coveredByMonthlyPlan===month&&old.coveredByPlanItemId===item.id&&old.planSnoozedUntil===until)return false;
+  template.statuses[due]={...old,coveredByMonthlyPlan:month,coveredByPlanItemId:item.id,planSnoozedUntil:until,snoozedUntil:old.snoozedUntil&&old.snoozedUntil>until?old.snoozedUntil:until,updatedAt:nowIso()};
+  template.updatedAt=nowIso();
+  return true;
+}
+function coverRecurringIncomeForPlanItem(item,month){
+  const candidates=(state.incomeSchedules||[]).filter(x=>!x.deletedAt&&!x.importedMonthlyPlan&&x.active!==false&&x.frequency!=="one");
+  const matches=candidates.filter(x=>incomeOccurrences(x,item.date,item.date).includes(item.date));
+  if(!matches.length)return false;
+  const exact=matches.find(x=>Math.abs(Number(x.amount||0)-Number(item.amount||0))<0.005&&x.amount!=null);
+  const generic=matches.find(x=>x.amount==null);
+  const sched=exact||generic||matches.find(x=>importName(x.name)===importName(item.name));
+  if(!sched)return false;
+  sched.coveredDates=sched.coveredDates||{};
+  if(sched.coveredDates[item.date]===month)return false;
+  sched.coveredDates[item.date]=month;sched.updatedAt=nowIso();return true;
+}
+function removeUnfinishedOperationalForPlanMonth(month){
+  let changed=false;
+  (state.bills||[]).forEach(b=>{
+    if(!b.importedMonthlyPlan||b.sourcePlanMonth!==month||b.deletedAt)return;
+    const hasPaid=Object.values(b.statuses||{}).some(st=>st?.paidAt);
+    if(!hasPaid){b.active=false;b.deletedAt=nowIso();b.updatedAt=nowIso();changed=true}
+  });
+  (state.incomeSchedules||[]).forEach(x=>{
+    if(!x.importedMonthlyPlan||x.sourcePlanMonth!==month||x.deletedAt)return;
+    if(!x.receivedAt){x.active=false;x.deletedAt=nowIso();x.updatedAt=nowIso();changed=true}
+  });
+  if(clearMonthlyPlanCoverage(month))changed=true;
+  return changed;
+}
+function syncMonthlyPlanToOperational(month){
+  const plan=state.monthlyPlans?.[month];if(!plan)return 0;
+  state.bills=state.bills||[];state.incomeSchedules=state.incomeSchedules||[];
+  let changed=0;
+  (plan.items||[]).forEach(item=>{
+    if(item.kind==="expense"){
+      let b=(state.bills||[]).find(x=>x.importedMonthlyPlan&&x.sourcePlanItemId===item.id&&!x.deletedAt);
+      if(!b){
+        b={id:uid("bill"),name:item.name||"Dépense prévue",amount:Number(item.amount||0),dueDay:Number(String(item.date).slice(8,10))||1,dueDate:item.date,startDate:item.date,category:item.category||"Autre",frequency:"one",variable:false,autopay:false,active:true,statuses:{},activeFrom:item.date,importedMonthlyPlan:true,sourcePlanMonth:month,sourcePlanItemId:item.id,createdAt:nowIso(),updatedAt:nowIso()};
+        state.bills.push(b);changed++;
+      }else{
+        const before=JSON.stringify([b.name,b.amount,b.dueDate,b.category,b.active]);
+        Object.assign(b,{name:item.name||b.name,amount:Number(item.amount||0),dueDay:Number(String(item.date).slice(8,10))||1,dueDate:item.date,startDate:item.date,category:item.category||"Autre",frequency:"one",active:true,activeFrom:item.date,updatedAt:nowIso()});
+        if(before!==JSON.stringify([b.name,b.amount,b.dueDate,b.category,b.active]))changed++;
+      }
+      if(coverRecurringTemplateForPlanItem(item,month))changed++;
+    }else if(item.kind==="income"){
+      let inc=(state.incomeSchedules||[]).find(x=>x.importedMonthlyPlan&&x.sourcePlanItemId===item.id&&!x.deletedAt);
+      if(!inc){
+        state.incomeSchedules.push({id:uid("inc"),name:item.name||"Revenu prévu",frequency:"one",dueDate:item.date,amount:Number(item.amount||0),active:true,importedMonthlyPlan:true,sourcePlanMonth:month,sourcePlanItemId:item.id,createdAt:nowIso(),updatedAt:nowIso()});changed++;
+      }else{
+        const before=JSON.stringify([inc.name,inc.amount,inc.dueDate,inc.frequency,inc.active]);
+        inc.name=item.name||inc.name;inc.amount=Number(item.amount||0);inc.dueDate=item.date;inc.frequency="one";inc.active=!inc.receivedAt;
+        const after=JSON.stringify([inc.name,inc.amount,inc.dueDate,inc.frequency,inc.active]);
+        if(before!==after){inc.updatedAt=nowIso();changed++}
+      }
+      if(coverRecurringIncomeForPlanItem(item,month))changed++;
+    }
+  });
+  plan.operationalLinkedAt=nowIso();plan.updatedAt=nowIso();
+  return changed;
+}
+function migrateMonthlyPlansToOperational(){
+  let changed=0;
+  state.monthlyPlans=state.monthlyPlans||{};
+  Object.keys(state.monthlyPlans).forEach(month=>{changed+=syncMonthlyPlanToOperational(month)});
+  if(changed){state.updatedAt=nowIso();localStorage.setItem(LS_KEY,JSON.stringify(state))}
+  return changed;
+}
+function receiveIncome(id,date){
+  const sched=(state.incomeSchedules||[]).find(x=>x.id===id);if(!sched)return;
+  if(sched.receivedAt)return toast("Paie déjà reçue ✅");
+  const suggested=Number(sched.amount||0);
+  const raw=prompt(`Montant reçu pour ${sched.name}`,String(suggested));if(raw===null)return;
+  const amount=importTextMoney(raw);if(!Number.isFinite(amount)||amount<0)return toast("Entre un montant valide");
+  const exists=(state.transactions||[]).some(t=>t.kind==="income"&&t.sourceIncomeScheduleId===sched.id);
+  if(!exists)state.transactions.unshift({id:uid("tx"),kind:"income",amount,date:date||sched.dueDate||today(),name:sched.name,memberName:profile.memberName||"Moi",note:"Paie reçue depuis le budget du mois",sourceIncomeScheduleId:sched.id,createdAt:nowIso(),updatedAt:nowIso()});
+  sched.receivedAt=nowIso();sched.receivedAmount=amount;sched.active=false;sched.updatedAt=nowIso();saveState();toast("Paie marquée reçue 💵");
+}
 
 // ----- Import budget depuis ChatGPT / photo mise au propre -----
 function importTextMoney(v){
@@ -711,7 +857,9 @@ function parseBudgetImport(text){
   return out;
 }
 function budgetImportItemStatus(item){
-  if(item.type==="plan")return "Prévision seulement — ne change pas le solde réel";
+  if(item.type==="plan"&&item.kind==="expense")return "Sera créée automatiquement comme paiement à la bonne date";
+  if(item.type==="plan"&&item.kind==="income")return "Sera ajoutée au calendrier; tu la confirmeras reçue";
+  if(item.type==="plan")return "Repère du budget mensuel";
   if(item.type==="income"||item.type==="expense")return transactionLooksDuplicate(item)?"Déjà présente — ignorée":"Sera ajoutée";
   if(item.type==="balance")return `Solde final sera ajusté à ${money(item.amount)}`;
   if(item.type==="bill")return findBillByImportName(item.name)?"Facture existante — sera mise à jour":"Nouvelle facture — sera ajoutée";
@@ -736,7 +884,7 @@ function budgetImportItemHtml(item){
 }
 function openBudgetImport(){
   openModal(`${modalHeader("📥 Importer un budget")}<form id="budgetImportForm">
-    <p class="muted small">Colle ici le bloc que ChatGPT t'a préparé après la photo. Un BUDGETMOIS reste une prévision et ne touche pas au solde réel. Rien n'est enregistré avant l'aperçu et ta confirmation.</p>
+    <p class="muted small">Colle ici le bloc que ChatGPT t'a préparé après la photo. Après confirmation, les dépenses du BUDGETMOIS deviennent automatiquement des paiements avec la bonne date, rappel et bouton ✅ Payé. Les paies prévues vont au calendrier et n'augmentent le solde qu'une fois marquées reçues.</p>
     <label>Budget à importer<textarea id="budgetImportText" rows="12" style="width:100%;min-height:220px" placeholder="BUDGETMOIS|2026-10\nPLAN_REVENU|2026-10-01|Ma paie|760\nPLAN_DEPENSE|2026-10-01|Épicerie|300|Épicerie\nPLAN_RESTANT|2026-10-01|-160|Restant prévu\nPLAN_NOTE|2026-10-13|Prévoir argent pour le permis"></textarea></label>
     <button class="fullBtn primary" type="submit">🔎 Vérifier avant d'importer</button>
     <div id="budgetImportPreview" style="margin-top:12px"></div>
@@ -754,7 +902,7 @@ function renderBudgetImportPreview(parsed){
   const items=parsed.items.map(budgetImportItemHtml).join("");
   const dup=parsed.items.filter(x=>(x.type==="income"||x.type==="expense")&&transactionLooksDuplicate(x)).length;
   const planCount=parsed.items.filter(x=>x.type==="plan").length;
-  const planMsg=planCount&&parsed.planMonth?`<div class="card"><strong>📅 ${esc(monthLabel(parsed.planMonth))}</strong><div class="sub">${planCount} ligne(s) de prévision. ${state.monthlyPlans?.[parsed.planMonth]?"Le plan déjà enregistré pour ce mois sera remplacé.":"Un nouveau plan mensuel sera créé."} Ces lignes ne changent jamais ton solde réel.</div></div>`:"";
+  const planMsg=planCount&&parsed.planMonth?`<div class="card"><strong>📅 ${esc(monthLabel(parsed.planMonth))}</strong><div class="sub">${planCount} ligne(s) de prévision. ${state.monthlyPlans?.[parsed.planMonth]?"Le plan déjà enregistré pour ce mois sera remplacé.":"Un nouveau plan mensuel sera créé."} Les dépenses seront aussi créées comme paiements datés; elles ne réduisent le solde que lorsque tu les marques payées.</div></div>`:"";
   host.innerHTML=`${errs}${warns}${planMsg}<div class="card"><strong>Aperçu</strong><div class="sub">${parsed.items.length} élément(s) reconnu(s)${dup?` · ${dup} doublon(s) seront ignorés`:""}. Aucune donnée existante ne sera supprimée, sauf qu'un BUDGETMOIS remplace uniquement le plan du même mois.</div></div>${items}${parsed.errors.length?"":`<button type="button" id="confirmBudgetImportBtn" class="fullBtn primary" style="margin-top:12px">✅ Confirmer l'import</button>`}`;
   const btn=document.getElementById("confirmBudgetImportBtn");if(btn)btn.onclick=()=>applyBudgetImport(parsed);
 }
@@ -764,8 +912,10 @@ function applyBudgetImport(parsed){
   const planItems=parsed.items.filter(x=>x.type==="plan");
   if(planItems.length&&parsed.planMonth){
     state.monthlyPlans=state.monthlyPlans||{};
+    removeUnfinishedOperationalForPlanMonth(parsed.planMonth);
     state.monthlyPlans[parsed.planMonth]={month:parsed.planMonth,items:planItems.map(x=>({...x,id:uid("plan")})),updatedAt:nowIso()};
     planSaved=planItems.length;
+    syncMonthlyPlanToOperational(parsed.planMonth);
   }
   parsed.items.forEach(item=>{
     if(item.type==="plan")return;
@@ -866,7 +1016,7 @@ function archiveOld(){ // Safe monthly summaries, then detail removal according 
   const old=state.transactions.filter(t=>t.date<cut);if(!old.length)return;
   const groups={};const ensure=k=>groups[k]||(groups[k]={income:0,expense:0,over:0,billAmount:0,billsPaid:0,categories:{}});
   old.forEach(t=>{const k=monthKey(t.date),g=ensure(k);g[t.kind]=(g[t.kind]||0)+Number(t.amount||0);if(t.kind==="expense")g.categories[t.category||"Autre"]=(g.categories[t.category||"Autre"]||0)+Number(t.amount||0)});
-  state.bills.forEach(b=>Object.keys(b.statuses||{}).forEach(due=>{const st=b.statuses[due],pd=(st.paidAt||"").slice(0,10);if(pd&&pd<cut){const k=monthKey(pd),g=ensure(k),amt=Number(st.paidAmount??b.amount??0);g.billAmount+=amt;g.billsPaid+=1;g.categories.Factures=(g.categories.Factures||0)+amt;delete b.statuses[due];b.updatedAt=nowIso()}}));
+  state.bills.forEach(b=>Object.keys(b.statuses||{}).forEach(due=>{const st=b.statuses[due],pd=(st.paidAt||"").slice(0,10);if(pd&&pd<cut){const k=monthKey(pd),g=ensure(k),amt=Number(st.paidAmount??b.amount??0),cat=(b.category&&b.category!=="Facture")?b.category:"Factures";g.billAmount+=amt;g.billsPaid+=1;g.categories[cat]=(g.categories[cat]||0)+amt;delete b.statuses[due];b.updatedAt=nowIso()}}));
   Object.entries(groups).forEach(([k,v])=>state.archives[k]={...(state.archives[k]||{}),...v,archivedAt:nowIso()});
   state.transactions=state.transactions.filter(t=>t.date>=cut);localStorage.setItem(LS_KEY,JSON.stringify(state))
 }
@@ -893,9 +1043,9 @@ on("addCategoryBudgetBtn","click",addCategoryBudget);
 on("seedBtn","click",()=>{if(confirm("Remettre les factures de départ? Ça n'efface pas tes dépenses.")){state.bills=seedBills();saveState();toast("Factures de départ remises")}});
 on("importBtn","click",()=>$("#importFile")?.click());on("importFile","change",e=>e.target.files[0]&&importData(e.target.files[0]));
 
-window.BP={close:closeModal,payBill,snooze,endBill,deleteBill,quickMerchant:s=>expenseForm(decodeURIComponent(s)),editBill:billForm,addGoalMoney,removeCategoryBudget,editHistory,openMonthlyPlan};
+window.BP={close:closeModal,payBill,snooze,endBill,deleteBill,quickMerchant:s=>expenseForm(decodeURIComponent(s)),editBill:billForm,addGoalMoney,removeCategoryBudget,editHistory,openMonthlyPlan,receiveIncome};
 
-initTheme();migrateTrackingStart();archiveOld();render();if("serviceWorker" in navigator)navigator.serviceWorker.register("sw.js").catch(()=>{});
+initTheme();migrateTrackingStart();migrateMonthlyPlansToOperational();archiveOld();render();if("serviceWorker" in navigator)navigator.serviceWorker.register("sw.js").catch(()=>{});
 if(profile.token)pullCloud();if(profile.oneSignalAppId)initOneSignal();
 setInterval(()=>{if(profile.token&&document.visibilityState==="visible")pullCloud()},30000);
 document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible"&&profile.token)pullCloud()});
