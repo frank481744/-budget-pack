@@ -169,6 +169,64 @@ function availableToPay(){
 function render(){
   renderHome();renderGoals();renderCalendar();renderHistory();renderSummary();renderSettings();renderQuickMerchants();updateSyncLine();ensureNegativeBalanceButton();ensureNightBalanceHomeButton();ensureBudgetImportHomeButton();ensureMonthlyPlanHomeButton();
 }
+
+// ----- Suivi du plan : solde réel vs repères « restant prévu » -----
+function planRemainingMarkers(){
+  const out=[];
+  Object.entries(state.monthlyPlans||{}).forEach(([month,plan])=>{
+    (plan?.items||[]).forEach((item,index)=>{
+      if(item?.kind!=="remaining"||!validImportDate(item.date))return;
+      const amount=Number(item.amount);if(!Number.isFinite(amount))return;
+      out.push({month,date:item.date,amount,label:item.label||"Restant prévu",line:Number(item.line||index),index});
+    });
+  });
+  return out.sort((a,b)=>a.date.localeCompare(b.date)||(a.line-b.line)||(a.index-b.index));
+}
+function planTrackerData(){
+  const markers=planRemainingMarkers(), now=today();
+  if(!markers.length)return {active:null,next:null};
+  const past=markers.filter(x=>x.date<=now);
+  const active=past.length?past[past.length-1]:null;
+  const next=markers.find(x=>x.date>now)||null;
+  if(!active)return {active:null,next};
+  const actual=Number(currentBalance().toFixed(2));
+  const planned=Number(active.amount.toFixed(2));
+  const diff=Number((actual-planned).toFixed(2));
+  return {active,next,actual,planned,diff};
+}
+function ensurePlanTrackerHome(){
+  let box=document.getElementById("planTrackerCard");
+  if(box)return box;
+  const stats=document.querySelector("#homePage .stats4");
+  if(!stats)return null;
+  box=document.createElement("div");
+  box.id="planTrackerCard";
+  box.className="card";
+  box.style.marginTop="12px";
+  stats.insertAdjacentElement("afterend",box);
+  return box;
+}
+function renderPlanTracker(){
+  const box=ensurePlanTrackerHome();if(!box)return;
+  const t=planTrackerData();
+  if(!t.active){
+    if(t.next){
+      box.innerHTML=`<div class="catTop"><strong>📊 Suivi du plan</strong><strong>${money(t.next.amount)}</strong></div><div class="sub">Prochain repère : ${esc(fmtDate(t.next.date))} · ${esc(t.next.label||"Restant prévu")}</div><div class="sub" style="margin-top:6px">Le suivi réel vs prévu commencera à ce repère.</div>`;
+    }else{
+      box.innerHTML=`<div class="catTop"><strong>📊 Suivi du plan</strong></div><div class="sub">Ajoute un « Restant prévu » dans le budget importé pour activer le suivi.</div>`;
+    }
+    return;
+  }
+  const d=t.diff;
+  const status=Math.abs(d)<0.01
+    ? `<strong class="okText">✅ Pile sur le budget</strong>`
+    : d>0
+      ? `<strong class="okText">🟢 ${money(d)} mieux que prévu</strong>`
+      : `<strong class="dangerText">🔴 ${money(Math.abs(d))} sous le budget prévu</strong>`;
+  const next=t.next?`<div class="sub" style="margin-top:8px">Prochain repère : <b>${money(t.next.amount)}</b> · ${esc(fmtDate(t.next.date))}</div>`:"";
+  box.innerHTML=`<div class="catTop"><strong>📊 Suivi du plan</strong>${status}</div><div class="catTop" style="margin-top:8px"><span>Prévu au dernier repère</span><strong>${money(t.planned)}</strong></div><div class="catTop"><span>Solde réel dans l'app</span><strong>${money(t.actual)}</strong></div><div class="sub" style="margin-top:6px">Repère du ${esc(fmtDate(t.active.date))} · ${esc(t.active.label||"Restant prévu")}</div>${next}`;
+}
+
 function renderHome(){
   const bal=currentBalance();$("#budgetBalance").textContent=money(bal);$("#availableUntilPay").textContent=money(availableToPay());$("#overThisMonth").textContent=money(overMonth());
   const od=$("#overdraftCard");
@@ -180,6 +238,7 @@ function renderHome(){
   $("#spendWeek").textContent=money(spend);$("#groceryWeek").textContent=`${money(groc)} / ${money(state.settings.groceryBudget||0)}`;
   const show=items.filter(x=>!x.status.paidAt && (x.due>=addDays(today(),-14))).slice(0,7);
   $("#homeBills").innerHTML=show.length?show.map(renderBillRow).join(""):`<div class="card muted">Aucun paiement urgent 🎉</div>`;
+  renderPlanTracker();
 }
 function renderBillRow(x){
   const late=x.due<today(), snooze=x.status.snoozedUntil&&x.status.snoozedUntil>today();
