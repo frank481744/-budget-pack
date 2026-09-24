@@ -624,6 +624,7 @@ function openMonthlyPlan(key=null){
   const items=(plan.items||[]).slice().sort((a,b)=>String(a.date||"").localeCompare(String(b.date||"")));
   const income=items.filter(x=>x.kind==="income").reduce((a,x)=>a+Number(x.amount||0),0);
   const expense=items.filter(x=>x.kind==="expense").reduce((a,x)=>a+Number(x.amount||0),0);
+  const carryover=items.filter(x=>x.kind==="carryover").reduce((a,x)=>a+Number(x.amount||0),0);
   const options=keys.map(k=>`<option value="${esc(k)}" ${k===key?"selected":""}>${esc(monthLabel(k))}</option>`).join("");
   const groups={};items.forEach(x=>(groups[x.date||`${key}-01`]=groups[x.date||`${key}-01`]||[]).push(x));
   const rows=Object.entries(groups).map(([date,list])=>{
@@ -641,6 +642,7 @@ function openMonthlyPlan(key=null){
           : `${esc(x.category||"Dépense prévue")} · À payer · montant prévu ${money(x.amount)}`;
         return `<div class="historyRow"><div class="historyMain"><div class="historyTitle">💸 ${esc(x.name)}</div><div class="sub">${sub}</div></div><div class="amount ${paid?"okText":""}">−${money(actual)}</div>${b&&!paid?`<div class="rowActions"><button onclick="BP.payBill('${b.id}','${x.date}')">✅</button></div>`:""}</div>`;
       }
+      if(x.kind==="carryover")return `<div class="historyRow"><div class="historyMain"><div class="historyTitle">↩️ ${esc(x.label||x.name||"Retard reporté")}</div><div class="sub">Argent déjà manquant de la période précédente · pas un paiement</div></div><div class="amount">−${money(Math.abs(Number(x.amount||0)))}</div></div>`;
       if(x.kind==="remaining")return `<div class="historyRow"><div class="historyMain"><div class="historyTitle">💰 ${esc(x.label||"Restant prévu")}</div><div class="sub">Repère du budget papier</div></div><div class="amount">${money(x.amount)}</div></div>`;
       return `<div class="historyRow"><div class="historyMain"><div class="historyTitle">📝 ${esc(x.text||x.name||"Note")}</div><div class="sub">Note du budget</div></div></div>`;
     }).join("");
@@ -648,7 +650,7 @@ function openMonthlyPlan(key=null){
   }).join("")||`<div class="card muted">Aucune ligne dans ce budget.</div>`;
   openModal(`${modalHeader("📅 Budget du mois")}
     <label>Mois<select id="monthlyPlanSelect">${options}</select></label>
-    <div class="card"><div class="catTop"><span>Revenus prévus</span><strong>${money(income)}</strong></div><div class="catTop"><span>Dépenses prévues</span><strong>${money(expense)}</strong></div><div class="catTop"><span>Écart prévu</span><strong>${money(income-expense)}</strong></div><div class="sub" style="margin-top:6px">Les dépenses du plan sont aussi créées comme paiements à la bonne date : rappels, bouton ✅ Payé, historique et solde fonctionnent ensemble. Les paies prévues restent hors du solde jusqu'à ce que tu les marques reçues.</div></div>
+    <div class="card"><div class="catTop"><span>Revenus prévus</span><strong>${money(income)}</strong></div><div class="catTop"><span>Dépenses prévues</span><strong>${money(expense)}</strong></div>${carryover?`<div class="catTop"><span>Retard reporté</span><strong>−${money(Math.abs(carryover))}</strong></div>`:""}<div class="catTop"><span>Écart prévu après retard</span><strong>${money(income-expense-carryover)}</strong></div><div class="sub" style="margin-top:6px">Les vraies dépenses du plan deviennent des paiements avec rappel et bouton ✅ Payé. Un « retard reporté » représente seulement de l'argent déjà manquant de la période précédente : il n'est jamais créé comme facture. Les paies prévues restent hors du solde jusqu'à ce que tu les marques reçues.</div></div>
     ${rows}`);
   const sel=document.getElementById("monthlyPlanSelect");if(sel)sel.onchange=e=>openMonthlyPlan(e.target.value);
 }
@@ -723,6 +725,29 @@ function nightBalance(){
 }
 
 
+
+// ----- Correction anciens plans : « Retard » = déficit reporté, jamais une facture -----
+function migrateLegacyPlanRetards(){
+  let changed=false;
+  state.monthlyPlans=state.monthlyPlans||{};
+  Object.values(state.monthlyPlans).forEach(plan=>{
+    (plan?.items||[]).forEach(item=>{
+      if(item?.kind!=="expense"||!isPlanCarryoverName(item.name))return;
+      item.kind="carryover";
+      item.label=item.label||item.name||"Retard reporté";
+      delete item.category;
+      item.updatedAt=nowIso();
+      (state.bills||[]).forEach(b=>{
+        if(!b.importedMonthlyPlan||b.sourcePlanItemId!==item.id||b.deletedAt)return;
+        const paid=Object.values(b.statuses||{}).some(st=>st?.paidAt);
+        if(!paid){b.active=false;b.deletedAt=nowIso();b.updatedAt=nowIso()}
+      });
+      changed=true;
+    });
+  });
+  if(changed){state.updatedAt=nowIso();localStorage.setItem(LS_KEY,JSON.stringify(state))}
+  return changed;
+}
 
 // ----- Liaison automatique Budget du mois -> factures / paies -----
 function nextMonthStart(key){
@@ -850,6 +875,10 @@ function importKey(v){
 function importName(v){
   return String(v??"").trim().normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase().replace(/\s+/g," ");
 }
+function isPlanCarryoverName(v){
+  const n=importName(v).replace(/[._-]+/g," ").replace(/\s+/g," ").trim();
+  return n==="retard"||n==="retard reporte"||n==="deficit reporte"||n==="report de retard";
+}
 function validImportDate(v){return /^\d{4}-\d{2}-\d{2}$/.test(String(v||""))}
 function findBillByImportName(name){return (state.bills||[]).find(b=>!b.deletedAt&&importName(b.name)===importName(name))||null}
 function transactionLooksDuplicate(item){
@@ -882,9 +911,16 @@ function parseBudgetImport(text){
       else out.items.push({type:"plan",kind:"income",date,name,amount,line:idx+1});
       return;
     }
+    if(type==="PLAN_RETARD"||type==="PLAN_REPORT"||type==="PLAN_DEFICIT"||type==="PLAN_DÉFICIT"){
+      const date=p[1],amount=importTextMoney(p[2]),label=p[3]||"Retard reporté";
+      if(!validImportDate(date)||!Number.isFinite(amount)||amount<0)out.errors.push(`Ligne ${idx+1}: retard reporté invalide.`);
+      else out.items.push({type:"plan",kind:"carryover",date,amount,label,line:idx+1});
+      return;
+    }
     if(type==="PLAN_DEPENSE"||type==="PLAN_DÉPENSE"){
       const date=p[1],name=p[2]||"Dépense prévue",amount=importTextMoney(p[3]),category=p[4]||"Autre";
       if(!validImportDate(date)||!Number.isFinite(amount)||amount<0)out.errors.push(`Ligne ${idx+1}: dépense prévue invalide.`);
+      else if(isPlanCarryoverName(name))out.items.push({type:"plan",kind:"carryover",date,amount,label:name||"Retard reporté",line:idx+1});
       else out.items.push({type:"plan",kind:"expense",date,name,amount,category,line:idx+1});
       return;
     }
@@ -943,6 +979,7 @@ function parseBudgetImport(text){
 function budgetImportItemStatus(item){
   if(item.type==="plan"&&item.kind==="expense")return "Sera créée automatiquement comme paiement à la bonne date";
   if(item.type==="plan"&&item.kind==="income")return "Sera ajoutée au calendrier; tu la confirmeras reçue";
+  if(item.type==="plan"&&item.kind==="carryover")return "Retard reporté seulement — aucun paiement ni rappel ne sera créé";
   if(item.type==="plan")return "Repère du budget mensuel";
   if(item.type==="income"||item.type==="expense")return transactionLooksDuplicate(item)?"Déjà présente — ignorée":"Sera ajoutée";
   if(item.type==="balance")return `Solde final sera ajusté à ${money(item.amount)}`;
@@ -957,6 +994,7 @@ function budgetImportItemHtml(item){
   let title="",sub="";
   if(item.type==="plan"&&item.kind==="income"){title=`📅 💵 ${esc(item.name)} · +${money(item.amount)}`;sub=`Prévu · ${esc(fmtDate(item.date))}`}
   else if(item.type==="plan"&&item.kind==="expense"){title=`📅 💸 ${esc(item.name)} · −${money(item.amount)}`;sub=`${esc(item.category||"Autre")} · ${esc(fmtDate(item.date))}`}
+  else if(item.type==="plan"&&item.kind==="carryover"){title=`📅 ↩️ ${esc(item.label||"Retard reporté")} · −${money(Math.abs(Number(item.amount||0)))}`;sub=`Déficit de la période précédente · ${esc(fmtDate(item.date))}`}
   else if(item.type==="plan"&&item.kind==="remaining"){title=`📅 💰 ${esc(item.label||"Restant prévu")} · ${money(item.amount)}`;sub=`Repère · ${esc(fmtDate(item.date))}`}
   else if(item.type==="plan"&&item.kind==="note"){title=`📅 📝 ${esc(item.text)}`;sub=`Note · ${esc(fmtDate(item.date))}`}
   else if(item.type==="income"){title=`💵 ${esc(item.name)} · +${money(item.amount)}`;sub=fmtDate(item.date)}
@@ -968,7 +1006,7 @@ function budgetImportItemHtml(item){
 }
 function openBudgetImport(){
   openModal(`${modalHeader("📥 Importer un budget")}<form id="budgetImportForm">
-    <p class="muted small">Colle ici le bloc que ChatGPT t'a préparé après la photo. Après confirmation, les dépenses du BUDGETMOIS deviennent automatiquement des paiements avec la bonne date, rappel et bouton ✅ Payé. Les paies prévues vont au calendrier et n'augmentent le solde qu'une fois marquées reçues.</p>
+    <p class="muted small">Colle ici le bloc que ChatGPT t'a préparé après la photo. Après confirmation, les vraies dépenses du BUDGETMOIS deviennent automatiquement des paiements avec la bonne date, rappel et bouton ✅ Payé. Les lignes « Retard » sont gardées comme déficit reporté seulement : aucun paiement n'est créé. Les paies prévues vont au calendrier et n'augmentent le solde qu'une fois marquées reçues.</p>
     <label>Budget à importer<textarea id="budgetImportText" rows="12" style="width:100%;min-height:220px" placeholder="BUDGETMOIS|2026-10\nPLAN_REVENU|2026-10-01|Ma paie|760\nPLAN_DEPENSE|2026-10-01|Épicerie|300|Épicerie\nPLAN_RESTANT|2026-10-01|-160|Restant prévu\nPLAN_NOTE|2026-10-13|Prévoir argent pour le permis"></textarea></label>
     <button class="fullBtn primary" type="submit">🔎 Vérifier avant d'importer</button>
     <div id="budgetImportPreview" style="margin-top:12px"></div>
@@ -1129,7 +1167,7 @@ on("importBtn","click",()=>$("#importFile")?.click());on("importFile","change",e
 
 window.BP={close:closeModal,payBill,snooze,endBill,deleteBill,quickMerchant:s=>expenseForm(decodeURIComponent(s)),editBill:billForm,addGoalMoney,removeCategoryBudget,editHistory,openMonthlyPlan,receiveIncome};
 
-initTheme();migrateTrackingStart();migrateMonthlyPlansToOperational();archiveOld();render();if("serviceWorker" in navigator)navigator.serviceWorker.register("sw.js").catch(()=>{});
+initTheme();migrateTrackingStart();migrateLegacyPlanRetards();migrateMonthlyPlansToOperational();archiveOld();render();if("serviceWorker" in navigator)navigator.serviceWorker.register("sw.js").catch(()=>{});
 if(profile.token)pullCloud();if(profile.oneSignalAppId)initOneSignal();
 setInterval(()=>{if(profile.token&&document.visibilityState==="visible")pullCloud()},30000);
 document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible"&&profile.token)pullCloud()});
