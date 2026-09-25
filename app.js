@@ -211,7 +211,15 @@ function planTrackerData(){
   if(!markers.length)return {active:null,next:null};
   const past=markers.filter(x=>x.date<=now);
   const active=past.length?past[past.length-1]:null;
-  const next=markers.find(x=>x.date>now)||null;
+  // S'il y a plusieurs « restants » la même journée (ex. Frank, Mari, familial),
+  // le suivi utilise le DERNIER repère de cette journée, donc le restant familial final.
+  const future=markers.filter(x=>x.date>now);
+  let next=null;
+  if(future.length){
+    const firstDate=future[0].date;
+    const sameDate=future.filter(x=>x.date===firstDate);
+    next=sameDate[sameDate.length-1]||future[0];
+  }
   if(!active)return {active:null,next};
   const actual=Number(currentBalance().toFixed(2));
   const planned=Number(active.amount.toFixed(2));
@@ -813,6 +821,77 @@ function migrateLegacyPlanRetards(){
   return changed;
 }
 
+// ----- Correction du plan du 1er octobre 2026 -----
+// Sur la feuille papier : Frank finit à +60 $, Mari finit à -217 $ (arrondi à -220 $),
+// puis le restant familial est d'environ -160 $. Le 220 $ n'est PAS une dépense à payer.
+function migrateOct2026CombinedRemainders(){
+  const plan=state.monthlyPlans?.["2026-10"];
+  if(!plan?.items?.length)return false;
+  const items=plan.items;
+  let changed=false;
+
+  const sameDay=x=>x?.date==="2026-10-01";
+  const norm=x=>importName(x||"");
+  const approx=(a,b)=>Math.abs(Number(a||0)-Number(b||0))<0.01;
+
+  // Ancienne ligne créée par erreur comme « Dépense à identifier 220 $ ».
+  // On la transforme en repère « Restant Frank +60 $ » et on supprime le paiement opérationnel associé.
+  const mistaken=items.find(x=>sameDay(x)&&x.kind==="expense"&&approx(x.amount,220)&&(
+    norm(x.name).includes("depense a identifier") ||
+    norm(x.name).includes("depense a id") ||
+    norm(x.name)==="depense"
+  ));
+  if(mistaken){
+    const sourceId=mistaken.id;
+    mistaken.kind="remaining";
+    mistaken.amount=60;
+    mistaken.label="Restant Frank";
+    delete mistaken.name;
+    delete mistaken.category;
+    mistaken.updatedAt=nowIso();
+    (state.bills||[]).forEach(b=>{
+      if(!b.importedMonthlyPlan||b.sourcePlanItemId!==sourceId||b.deletedAt)return;
+      const paid=Object.values(b.statuses||{}).some(st=>st?.paidAt);
+      if(!paid){b.active=false;b.deletedAt=nowIso();b.updatedAt=nowIso()}
+    });
+    changed=true;
+  }
+
+  // Les deux anciens repères étaient mal nommés : -160 était écrit « Restant Frank »
+  // et -217 « Restant Mari ». On garde les trois étapes de calcul, dans le bon ordre.
+  const oldFrank=items.find(x=>sameDay(x)&&x.kind==="remaining"&&approx(x.amount,-160)&&norm(x.label).includes("restant frank"));
+  if(oldFrank){
+    oldFrank.amount=-217;
+    oldFrank.label="Restant Mari";
+    oldFrank.updatedAt=nowIso();
+    changed=true;
+  }
+
+  const oldMari=items.find(x=>sameDay(x)&&x.kind==="remaining"&&approx(x.amount,-217)&&norm(x.label).includes("restant mari")&&x!==oldFrank);
+  if(oldMari){
+    oldMari.amount=-160;
+    oldMari.label="Restant familial (arrondi feuille)";
+    oldMari.updatedAt=nowIso();
+    changed=true;
+  }
+
+  // Si une des anciennes lignes n'existe plus, on complète les repères sans créer de paiement.
+  const hasFrank=items.some(x=>sameDay(x)&&x.kind==="remaining"&&norm(x.label).includes("restant frank"));
+  const hasMari=items.some(x=>sameDay(x)&&x.kind==="remaining"&&norm(x.label).includes("restant mari"));
+  const hasFamily=items.some(x=>sameDay(x)&&x.kind==="remaining"&&norm(x.label).includes("restant familial"));
+  const maxLine=Math.max(0,...items.filter(sameDay).map((x,i)=>Number(x.line||i+1)));
+  if(!hasFrank){items.push({id:uid("plan"),type:"plan",kind:"remaining",date:"2026-10-01",amount:60,label:"Restant Frank",line:maxLine+1,createdAt:nowIso(),updatedAt:nowIso()});changed=true}
+  if(!hasMari){items.push({id:uid("plan"),type:"plan",kind:"remaining",date:"2026-10-01",amount:-217,label:"Restant Mari",line:maxLine+2,createdAt:nowIso(),updatedAt:nowIso()});changed=true}
+  if(!hasFamily){items.push({id:uid("plan"),type:"plan",kind:"remaining",date:"2026-10-01",amount:-160,label:"Restant familial (arrondi feuille)",line:maxLine+3,createdAt:nowIso(),updatedAt:nowIso()});changed=true}
+
+  if(changed){
+    plan.updatedAt=nowIso();
+    state.updatedAt=nowIso();
+    localStorage.setItem(LS_KEY,JSON.stringify(state));
+  }
+  return changed;
+}
+
 // ----- Liaison automatique Budget du mois -> factures / paies -----
 function nextMonthStart(key){
   const m=/^(\d{4})-(\d{2})$/.exec(String(key||""));if(!m)return null;
@@ -1241,7 +1320,7 @@ on("importBtn","click",()=>$("#importFile")?.click());on("importFile","change",e
 
 window.BP={close:closeModal,payBill,snooze,endBill,deleteBill,quickMerchant:s=>expenseForm(decodeURIComponent(s)),editBill:billForm,addGoalMoney,removeCategoryBudget,editHistory,openMonthlyPlan,receiveIncome};
 
-initTheme();migrateTrackingStart();migrateLegacyPlanRetards();migrateMonthlyPlansToOperational();archiveOld();render();if("serviceWorker" in navigator)navigator.serviceWorker.register("sw.js").catch(()=>{});
+initTheme();migrateTrackingStart();migrateLegacyPlanRetards();migrateOct2026CombinedRemainders();migrateMonthlyPlansToOperational();archiveOld();render();if("serviceWorker" in navigator)navigator.serviceWorker.register("sw.js").catch(()=>{});
 if(profile.token)pullCloud();if(profile.oneSignalAppId)initOneSignal();
 setInterval(()=>{if(profile.token&&document.visibilityState==="visible")pullCloud()},30000);
 document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible"&&profile.token)pullCloud()});
