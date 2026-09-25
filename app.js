@@ -160,11 +160,35 @@ function expensesWeek(){
   });
   return out;
 }
-function availableToPay(){
-  const bal=currentBalance(), np=nextPayDate(), end=np?.date||addDays(today(),14);
-  const due=dueItems(today(),end).filter(x=>!x.status.paidAt).reduce((s,x)=>s+Number(x.bill.amount||0),0);
-  return bal-due;
+function nextPayGroup(){
+  const from=today(),to=addDays(from,60),events=[];
+  state.incomeSchedules.forEach(s=>incomeOccurrences(s,from,to).forEach(date=>events.push({date,s})));
+  events.sort((a,b)=>a.date.localeCompare(b.date));
+  if(!events.length)return null;
+  const date=events[0].date, same=events.filter(x=>x.date===date);
+  const known=same.filter(x=>x.s.amount!=null);
+  const amount=known.reduce((sum,x)=>sum+Number(x.s.amount||0),0);
+  return {date,events:same,amount,hasUnknown:known.length!==same.length};
 }
+function nextPayProjection(){
+  const bal=Number(currentBalance());
+  const group=nextPayGroup();
+  if(!group){
+    const end=addDays(today(),14);
+    const beforeBills=dueItems(today(),end).filter(x=>!x.status.paidAt);
+    const dueBefore=beforeBills.reduce((sum,x)=>sum+Number(x.bill.amount||0),0);
+    return {bal,payDate:null,dueBefore,before:bal-dueBefore,payAmount:null,hasUnknown:true,sameDayDue:0,after:null,count:0};
+  }
+  const beforeEnd=addDays(group.date,-1);
+  const beforeBills=beforeEnd>=today()?dueItems(today(),beforeEnd).filter(x=>!x.status.paidAt):[];
+  const sameDayBills=dueItems(group.date,group.date).filter(x=>!x.status.paidAt);
+  const dueBefore=beforeBills.reduce((sum,x)=>sum+Number(x.bill.amount||0),0);
+  const sameDayDue=sameDayBills.reduce((sum,x)=>sum+Number(x.bill.amount||0),0);
+  const before=Number((bal-dueBefore).toFixed(2));
+  const after=group.hasUnknown?null:Number((before+group.amount-sameDayDue).toFixed(2));
+  return {bal,payDate:group.date,dueBefore,before,payAmount:group.amount,hasUnknown:group.hasUnknown,sameDayDue,after,count:group.events.length};
+}
+function availableToPay(){return nextPayProjection().before}
 
 function render(){
   renderHome();renderGoals();renderCalendar();renderHistory();renderSummary();renderSettings();renderQuickMerchants();updateSyncLine();ensureNegativeBalanceButton();ensureNightBalanceHomeButton();ensureBudgetImportHomeButton();ensureMonthlyPlanHomeButton();
@@ -227,6 +251,45 @@ function renderPlanTracker(){
   box.innerHTML=`<div class="catTop"><strong>📊 Suivi du plan</strong>${status}</div><div class="catTop" style="margin-top:8px"><span>Prévu au dernier repère</span><strong>${money(t.planned)}</strong></div><div class="catTop"><span>Solde réel dans l'app</span><strong>${money(t.actual)}</strong></div><div class="sub" style="margin-top:6px">Repère du ${esc(fmtDate(t.active.date))} · ${esc(t.active.label||"Restant prévu")}</div>${next}`;
 }
 
+function ensureNextPayProjectionHome(){
+  let box=document.getElementById("nextPayProjectionCard");
+  if(box)return box;
+  const grid=document.querySelector("#homePage .heroGrid");
+  if(!grid)return null;
+  box=document.createElement("div");
+  box.id="nextPayProjectionCard";
+  box.style.marginTop="12px";
+  box.style.padding="12px";
+  box.style.border="1px solid var(--card2)";
+  box.style.borderRadius="16px";
+  box.style.background="var(--card2)";
+  grid.insertAdjacentElement("afterend",box);
+  return box;
+}
+function renderNextPayProjection(){
+  const p=nextPayProjection();
+  const cell=document.getElementById("availableUntilPay")?.parentElement;
+  const label=cell?.querySelector("span");
+  if(label)label.textContent="Avant prochaine paie";
+  const box=ensureNextPayProjectionHome();if(!box)return;
+  if(!p.payDate){
+    box.innerHTML=`<div class="catTop"><strong>💵 Projection prochaine paie</strong></div><div class="sub">Aucune paie planifiée dans les 60 prochains jours. Le montant « Avant prochaine paie » réserve seulement les paiements des 14 prochains jours.</div>`;
+    return;
+  }
+  const payLabel=p.count>1?"Paies prévues":"Paie prévue";
+  const payValue=p.hasUnknown?"Montant à confirmer":money(p.payAmount);
+  const afterLine=p.after==null
+    ? `<div class="catTop"><span>Après paie + paiements du jour</span><strong>À confirmer</strong></div>`
+    : `<div class="catTop"><span>Après paie + paiements du jour</span><strong>${money(p.after)}</strong></div>`;
+  box.innerHTML=`<div class="catTop"><strong>💵 Projection prochaine paie</strong><strong>${esc(fmtDate(p.payDate))}</strong></div>
+    <div class="catTop" style="margin-top:8px"><span>Solde réel maintenant</span><strong>${money(p.bal)}</strong></div>
+    <div class="catTop"><span>À payer AVANT la paie</span><strong>−${money(p.dueBefore)}</strong></div>
+    <div class="catTop"><span>Juste avant la paie</span><strong>${money(p.before)}</strong></div>
+    <div class="catTop"><span>${payLabel}</span><strong>${payValue}</strong></div>
+    <div class="catTop"><span>Paiements prévus le même jour</span><strong>−${money(p.sameDayDue)}</strong></div>
+    ${afterLine}
+    <div class="sub" style="margin-top:6px">Les paiements déjà couverts par ton budget mensuel ne sont pas comptés une deuxième fois.</div>`;
+}
 function renderHome(){
   const bal=currentBalance();$("#budgetBalance").textContent=money(bal);$("#availableUntilPay").textContent=money(availableToPay());$("#overThisMonth").textContent=money(overMonth());
   const od=$("#overdraftCard");
@@ -238,6 +301,7 @@ function renderHome(){
   $("#spendWeek").textContent=money(spend);$("#groceryWeek").textContent=`${money(groc)} / ${money(state.settings.groceryBudget||0)}`;
   const show=items.filter(x=>!x.status.paidAt && (x.due>=addDays(today(),-14))).slice(0,7);
   $("#homeBills").innerHTML=show.length?show.map(renderBillRow).join(""):`<div class="card muted">Aucun paiement urgent 🎉</div>`;
+  renderNextPayProjection();
   renderPlanTracker();
 }
 function renderBillRow(x){
@@ -775,18 +839,28 @@ function clearMonthlyPlanCoverage(month){
   return changed;
 }
 function coverRecurringTemplateForPlanItem(item,month){
-  const template=(state.bills||[]).find(b=>!b.deletedAt&&!b.importedMonthlyPlan&&b.frequency!=="one"&&importName(b.name)===importName(item.name));
-  if(!template)return false;
-  let due="";
-  if(template.frequency==="monthly")due=monthlyDate(Number(month.slice(0,4)),Number(month.slice(5,7)),template.dueDay||1);
-  else if(template.frequency==="weekly")due=item.date;
-  if(!due)return false;
-  template.statuses=template.statuses||{};
-  const old=template.statuses[due]||{}, until=nextMonthStart(month);
-  if(old.coveredByMonthlyPlan===month&&old.coveredByPlanItemId===item.id&&old.planSnoozedUntil===until)return false;
-  template.statuses[due]={...old,coveredByMonthlyPlan:month,coveredByPlanItemId:item.id,planSnoozedUntil:until,snoozedUntil:old.snoozedUntil&&old.snoozedUntil>until?old.snoozedUntil:until,updatedAt:nowIso()};
-  template.updatedAt=nowIso();
-  return true;
+  const planName=importName(item.name);
+  const templates=(state.bills||[]).filter(b=>{
+    if(b.deletedAt||b.importedMonthlyPlan||b.frequency==="one")return false;
+    const billName=importName(b.name);
+    if(!billName||!planName)return false;
+    return billName===planName || planName.includes(billName) || billName.includes(planName);
+  });
+  if(!templates.length)return false;
+  let changed=false;
+  templates.forEach(template=>{
+    let due="";
+    if(template.frequency==="monthly")due=monthlyDate(Number(month.slice(0,4)),Number(month.slice(5,7)),template.dueDay||1);
+    else if(template.frequency==="weekly")due=item.date;
+    if(!due)return;
+    template.statuses=template.statuses||{};
+    const old=template.statuses[due]||{}, until=nextMonthStart(month);
+    if(old.coveredByMonthlyPlan===month&&old.coveredByPlanItemId===item.id&&old.planSnoozedUntil===until)return;
+    template.statuses[due]={...old,coveredByMonthlyPlan:month,coveredByPlanItemId:item.id,planSnoozedUntil:until,snoozedUntil:old.snoozedUntil&&old.snoozedUntil>until?old.snoozedUntil:until,updatedAt:nowIso()};
+    template.updatedAt=nowIso();
+    changed=true;
+  });
+  return changed;
 }
 function coverRecurringIncomeForPlanItem(item,month){
   const candidates=(state.incomeSchedules||[]).filter(x=>!x.deletedAt&&!x.importedMonthlyPlan&&x.active!==false&&x.frequency!=="one");
