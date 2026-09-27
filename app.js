@@ -1,5 +1,7 @@
 (() => {
 "use strict";
+const BUDGET_PACK_BUILD="2026-09-27-FIX160-V3";
+// BUDGET PACK FIX DOUBLONS V2 — 2026-09-27
 const LS_KEY="budgetPackStateV1", PROFILE_KEY="budgetPackProfileV1", THEME_KEY="budgetPackThemeV1";
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
 const pad=n=>String(n).padStart(2,"0");
@@ -381,9 +383,11 @@ function renderSettings(){
   const cb=state.settings.categoryBudgets||{};$("#categoryBudgetList").innerHTML=Object.keys(cb).length?Object.entries(cb).map(([k,v])=>`<div class="billRow"><div class="billMain"><div class="billTitle">${esc(k)}</div><div class="sub">Budget mensuel</div></div><div class="amount">${money(v)}</div><div class="rowActions"><button onclick="BP.removeCategoryBudget('${encodeURIComponent(k)}')">✕</button></div></div>`).join(""):`<div class="muted small">Aucun budget mensuel supplémentaire.</div>`;
   $("#cloudStatus").innerHTML=profile.token?`✅ Connecté comme <b>${esc(profile.memberName||"membre")}</b><br>Code famille : <b>${esc(profile.joinCode||"—")}</b>`:`Pas encore connecté — l'app fonctionne localement.`;
   ensureBalanceTools();
+  ensureOctCleanupButton();
 }
 function updateSyncLine(){
-  $("#syncLine").textContent=profile.token?`Budget partagé · ${profile.memberName||"connecté"}`:"Mode local · prêt à utiliser";
+  const build="FIX160-V3";
+  $("#syncLine").textContent=profile.token?`Budget partagé · ${profile.memberName||"connecté"} · ${build}`:`Mode local · ${build}`;
 }
 
 function openModal(html){$("#modal").innerHTML=html;$("#modalBackdrop").classList.remove("hidden")}
@@ -563,8 +567,18 @@ async function pullCloud(){
   if(!profile.token||!apiBase()||cloudBusy)return;cloudBusy=true;
   try{
     const j=await api("/api/state");
-    if(j.data&&j.data.settings){state=mergeState(state,j.data);profile.cloudVersion=j.version||0;saveProfile();localStorage.setItem(LS_KEY,JSON.stringify(state));render();await pushCloud(true)}
-    else{profile.cloudVersion=j.version||0;saveProfile();await pushCloud(true)}
+    if(j.data&&j.data.settings){
+      state=mergeState(state,j.data);
+      // Nettoie les anciens doublons AVANT d'afficher le budget partagé.
+      const cleaned=!!(migrateLegacyPlanRetards()|migrateOct2026CombinedRemainders());
+      migrateMonthlyPlansToOperational();
+      profile.cloudVersion=j.version||0;saveProfile();
+      localStorage.setItem(LS_KEY,JSON.stringify(state));
+      render();
+      // saveState planifie un push après 650 ms; à ce moment cloudBusy sera libéré.
+      if(cleaned){clearTimeout(cloudTimer);cloudTimer=setTimeout(()=>pushCloud(true),700)}
+    }
+    else{profile.cloudVersion=j.version||0;saveProfile()}
   }catch(e){console.warn(e)}finally{cloudBusy=false}
 }
 async function pushCloud(force=false){
@@ -572,7 +586,13 @@ async function pushCloud(force=false){
   try{
     const j=await api("/api/state",{method:"PUT",body:JSON.stringify({version:profile.cloudVersion||0,data:state})});profile.cloudVersion=j.version;saveProfile();$("#syncLine").textContent=`Synchronisé · ${profile.memberName||""}`;
   }catch(e){
-    if(e.status===409&&e.data?.data){state=mergeState(state,e.data.data);profile.cloudVersion=e.data.version;saveProfile();localStorage.setItem(LS_KEY,JSON.stringify(state));cloudBusy=false;return pushCloud(true)}
+    if(e.status===409&&e.data?.data){
+      state=mergeState(state,e.data.data);
+      migrateLegacyPlanRetards();
+      migrateOct2026CombinedRemainders();
+      migrateMonthlyPlansToOperational();
+      profile.cloudVersion=e.data.version;saveProfile();localStorage.setItem(LS_KEY,JSON.stringify(state));cloudBusy=false;return pushCloud(true)
+    }
     $("#syncLine").textContent="Sync à vérifier";console.warn(e)
   }finally{cloudBusy=false}
 }
@@ -833,56 +853,79 @@ function migrateOct2026CombinedRemainders(){
   const sameDay=x=>x?.date==="2026-10-01";
   const norm=x=>importName(x||"");
   const approx=(a,b)=>Math.abs(Number(a||0)-Number(b||0))<0.01;
-
-  // Ancienne ligne créée par erreur comme « Dépense à identifier 220 $ ».
-  // On la transforme en repère « Restant Frank +60 $ » et on supprime le paiement opérationnel associé.
-  const mistaken=items.find(x=>sameDay(x)&&x.kind==="expense"&&approx(x.amount,220)&&(
+  const isMistaken220=x=>sameDay(x)&&x.kind==="expense"&&approx(x.amount,220)&&(
     norm(x.name).includes("depense a identifier") ||
     norm(x.name).includes("depense a id") ||
     norm(x.name)==="depense"
-  ));
-  if(mistaken){
-    const sourceId=mistaken.id;
-    mistaken.kind="remaining";
-    mistaken.amount=60;
-    mistaken.label="Restant Frank";
-    delete mistaken.name;
-    delete mistaken.category;
-    mistaken.updatedAt=nowIso();
+  );
+
+  // Le 220 $ de la feuille n'était pas une dépense : c'était l'arrondi du -217 $ de Mari.
+  // On retire toutes les anciennes versions de ce faux paiement et leur rappel opérationnel.
+  const bad220=items.filter(isMistaken220);
+  bad220.forEach(item=>{
     (state.bills||[]).forEach(b=>{
-      if(!b.importedMonthlyPlan||b.sourcePlanItemId!==sourceId||b.deletedAt)return;
+      if(!b.importedMonthlyPlan||b.sourcePlanItemId!==item.id||b.deletedAt)return;
       const paid=Object.values(b.statuses||{}).some(st=>st?.paidAt);
       if(!paid){b.active=false;b.deletedAt=nowIso();b.updatedAt=nowIso()}
     });
+  });
+  if(bad220.length){
+    plan.items=plan.items.filter(x=>!bad220.includes(x));
     changed=true;
   }
 
-  // Les deux anciens repères étaient mal nommés : -160 était écrit « Restant Frank »
-  // et -217 « Restant Mari ». On garde les trois étapes de calcul, dans le bon ordre.
-  const oldFrank=items.find(x=>sameDay(x)&&x.kind==="remaining"&&approx(x.amount,-160)&&norm(x.label).includes("restant frank"));
-  if(oldFrank){
-    oldFrank.amount=-217;
-    oldFrank.label="Restant Mari";
-    oldFrank.updatedAt=nowIso();
-    changed=true;
-  }
+  let list=plan.items;
 
-  const oldMari=items.find(x=>sameDay(x)&&x.kind==="remaining"&&approx(x.amount,-217)&&norm(x.label).includes("restant mari")&&x!==oldFrank);
-  if(oldMari){
-    oldMari.amount=-160;
-    oldMari.label="Restant familial (arrondi feuille)";
-    oldMari.updatedAt=nowIso();
-    changed=true;
-  }
+  // Corrige les vieux libellés sans transformer à répétition les bons repères.
+  list.forEach(x=>{
+    if(!sameDay(x)||x.kind!=="remaining")return;
+    const label=norm(x.label);
+    if(label.includes("restant frank")&&approx(x.amount,-160)){
+      x.label="Restant familial (arrondi feuille)";x.updatedAt=nowIso();changed=true;
+    }
+    if(label.includes("restant mari")&&approx(x.amount,-160)){
+      x.label="Restant familial (arrondi feuille)";x.updatedAt=nowIso();changed=true;
+    }
+  });
 
-  // Si une des anciennes lignes n'existe plus, on complète les repères sans créer de paiement.
-  const hasFrank=items.some(x=>sameDay(x)&&x.kind==="remaining"&&norm(x.label).includes("restant frank"));
-  const hasMari=items.some(x=>sameDay(x)&&x.kind==="remaining"&&norm(x.label).includes("restant mari"));
-  const hasFamily=items.some(x=>sameDay(x)&&x.kind==="remaining"&&norm(x.label).includes("restant familial"));
-  const maxLine=Math.max(0,...items.filter(sameDay).map((x,i)=>Number(x.line||i+1)));
-  if(!hasFrank){items.push({id:uid("plan"),type:"plan",kind:"remaining",date:"2026-10-01",amount:60,label:"Restant Frank",line:maxLine+1,createdAt:nowIso(),updatedAt:nowIso()});changed=true}
-  if(!hasMari){items.push({id:uid("plan"),type:"plan",kind:"remaining",date:"2026-10-01",amount:-217,label:"Restant Mari",line:maxLine+2,createdAt:nowIso(),updatedAt:nowIso()});changed=true}
-  if(!hasFamily){items.push({id:uid("plan"),type:"plan",kind:"remaining",date:"2026-10-01",amount:-160,label:"Restant familial (arrondi feuille)",line:maxLine+3,createdAt:nowIso(),updatedAt:nowIso()});changed=true}
+  const canonicalKind=x=>{
+    if(!sameDay(x)||x.kind!=="remaining")return null;
+    const label=norm(x.label);
+    if(label.includes("restant frank")&&approx(x.amount,60))return "frank";
+    if(label.includes("restant mari")&&approx(x.amount,-217))return "mari";
+    if(label.includes("restant familial")&&approx(x.amount,-160))return "family";
+    return null;
+  };
+
+  // Supprime les doublons créés par l'ancienne migration (un seul Frank, Mari et familial).
+  const seen=new Set();
+  const cleaned=[];
+  list.forEach(x=>{
+    const k=canonicalKind(x);
+    if(k&&seen.has(k)){changed=true;return}
+    if(k)seen.add(k);
+    cleaned.push(x);
+  });
+  if(cleaned.length!==list.length)plan.items=cleaned;
+  list=plan.items;
+
+  const maxOtherLine=Math.max(0,...list.filter(x=>sameDay(x)&&!canonicalKind(x)).map((x,i)=>Number(x.line||i+1)));
+  const ensureMarker=(kind,amount,label,line)=>{
+    let item=list.find(x=>canonicalKind(x)===kind);
+    if(!item){
+      item={id:uid("plan"),type:"plan",kind:"remaining",date:"2026-10-01",amount,label,line,createdAt:nowIso(),updatedAt:nowIso()};
+      list.push(item);changed=true;
+    }
+    const before=JSON.stringify([item.type,item.kind,item.date,item.amount,item.label,item.line]);
+    Object.assign(item,{type:"plan",kind:"remaining",date:"2026-10-01",amount,label,line});
+    const after=JSON.stringify([item.type,item.kind,item.date,item.amount,item.label,item.line]);
+    if(before!==after){item.updatedAt=nowIso();changed=true}
+    return item;
+  };
+
+  ensureMarker("frank",60,"Restant Frank",maxOtherLine+1);
+  ensureMarker("mari",-217,"Restant Mari",maxOtherLine+2);
+  ensureMarker("family",-160,"Restant familial (arrondi feuille)",maxOtherLine+3);
 
   if(changed){
     plan.updatedAt=nowIso();
@@ -890,6 +933,31 @@ function migrateOct2026CombinedRemainders(){
     localStorage.setItem(LS_KEY,JSON.stringify(state));
   }
   return changed;
+}
+
+function octRemainderDuplicateCount(){
+  const items=state.monthlyPlans?.["2026-10"]?.items||[];
+  const norm=v=>importName(v||"");
+  return items.filter(x=>x?.date==="2026-10-01"&&x.kind==="remaining"&&norm(x.label).includes("restant familial")&&Math.abs(Number(x.amount||0)+160)<0.01).length;
+}
+function cleanupOctRemaindersNow(){
+  const before=octRemainderDuplicateCount();
+  const changed=migrateOct2026CombinedRemainders();
+  const after=octRemainderDuplicateCount();
+  if(changed){saveState();toast(`Nettoyage fait ✅ ${before} → ${after} restant familial`)}
+  else toast(`Déjà propre ✅ ${after} restant familial`);
+}
+function ensureOctCleanupButton(){
+  const existing=document.getElementById("cleanupOctRemaindersBtn");
+  const count=octRemainderDuplicateCount();
+  if(count<=1){if(existing)existing.remove();return}
+  if(existing){existing.textContent=`🧹 Nettoyer les doublons -160 $ (${count})`;return}
+  const seed=document.getElementById("seedBtn");if(!seed||!seed.parentNode)return;
+  const btn=document.createElement("button");
+  btn.type="button";btn.id="cleanupOctRemaindersBtn";btn.className="fullBtn primary";
+  btn.style.marginBottom="10px";btn.textContent=`🧹 Nettoyer les doublons -160 $ (${count})`;
+  btn.onclick=cleanupOctRemaindersNow;
+  seed.parentNode.insertBefore(btn,seed);
 }
 
 // ----- Liaison automatique Budget du mois -> factures / paies -----
