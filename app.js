@@ -1,6 +1,6 @@
 (() => {
 "use strict";
-const BUDGET_PACK_BUILD="2026-09-27-FIX160-V3";
+const BUDGET_PACK_BUILD="2026-10-30-CALENDAR-V1";
 // BUDGET PACK FIX DOUBLONS V2 — 2026-09-27
 const LS_KEY="budgetPackStateV1", PROFILE_KEY="budgetPackProfileV1", THEME_KEY="budgetPackThemeV1";
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
@@ -193,7 +193,7 @@ function nextPayProjection(){
 function availableToPay(){return nextPayProjection().before}
 
 function render(){
-  renderHome();renderGoals();renderCalendar();renderHistory();renderSummary();renderSettings();renderQuickMerchants();updateSyncLine();ensureNegativeBalanceButton();ensureNightBalanceHomeButton();ensureBudgetImportHomeButton();ensureMonthlyPlanHomeButton();
+  renderHome();renderGoals();renderCalendar();renderHistory();renderSummary();renderSettings();renderQuickMerchants();updateSyncLine();ensureNegativeBalanceButton();ensureNightBalanceHomeButton();ensureBudgetImportHomeButton();ensureMonthlyPlanHomeButton();renderCalendarFirst();
 }
 
 // ----- Suivi du plan : solde réel vs repères « restant prévu » -----
@@ -386,7 +386,7 @@ function renderSettings(){
   ensureOctCleanupButton();
 }
 function updateSyncLine(){
-  const build="FIX160-V3";
+  const build="CALENDAR-V1";
   $("#syncLine").textContent=profile.token?`Budget partagé · ${profile.memberName||"connecté"} · ${build}`:`Mode local · ${build}`;
 }
 
@@ -454,7 +454,7 @@ function payBill(id,due){
 
   // Les paiements provenant du budget mensuel gardent le montant prévu,
   // mais permettent de confirmer ou corriger le montant réellement payé.
-  if(b.importedMonthlyPlan){
+  if(b.importedMonthlyPlan||b.calendarFlexible){
     const exact=confirm(`🧾 ${b.name}\n\nMontant prévu : ${money(planned)}\n\nAs-tu payé exactement ce montant?\n\nOK = oui\nAnnuler = corriger le montant`);
     if(!exact){
       const raw=prompt(`Entre le montant réellement payé pour ${b.name}`,String(planned));
@@ -1364,6 +1364,279 @@ function archiveOld(){ // Safe monthly summaries, then detail removal according 
   state.transactions=state.transactions.filter(t=>t.date>=cut);localStorage.setItem(LS_KEY,JSON.stringify(state))
 }
 
+
+// =====================================================================
+// BUDGET PACK — CALENDAR FIRST V1 (2026-10-30)
+// Nouveau virage : rendez-vous + choses à payer + import rapide par code.
+// Les rendez-vous sont stockés comme éléments datés dans state.bills (montant 0),
+// ce qui conserve le partage et le moteur de rappels existant sans migration risquée.
+// =====================================================================
+let calMonthCursor=new Date(new Date().getFullYear(),new Date().getMonth(),1);
+let calSelectedDate=today();
+
+function calKind(b){
+  if(b?.calendarKind==="appointment"||importName(b?.category)==="rendez-vous"||importName(b?.category)==="rendez vous")return "appointment";
+  return "payment";
+}
+function calIsDone(item){return !!item?.status?.paidAt}
+function calTimeLabel(b){return b?.eventTime?String(b.eventTime).slice(0,5):""}
+function calFullDate(date){return parseLocal(date).toLocaleDateString("fr-CA",{weekday:"long",day:"numeric",month:"long",year:"numeric"})}
+function calShortDate(date){return parseLocal(date).toLocaleDateString("fr-CA",{weekday:"short",day:"numeric",month:"short"})}
+function calEscapeAttr(s){return esc(String(s??""))}
+function calItems(from,to){
+  return dueItems(from,to).map(x=>({...x,calKind:calKind(x.bill)})).sort((a,b)=>{
+    const d=a.due.localeCompare(b.due);if(d)return d;
+    const ta=calTimeLabel(a.bill)||"99:99",tb=calTimeLabel(b.bill)||"99:99";
+    if(ta!==tb)return ta.localeCompare(tb);
+    return String(a.bill.name||"").localeCompare(String(b.bill.name||""),"fr");
+  });
+}
+function calUpcoming(days=7){return calItems(today(),addDays(today(),days)).filter(x=>!calIsDone(x))}
+function calPaymentTotal(days=7){return calUpcoming(days).filter(x=>x.calKind==="payment").reduce((sum,x)=>sum+Number(x.bill.amount||0),0)}
+function calAppointmentCount(days=7){return calUpcoming(days).filter(x=>x.calKind==="appointment").length}
+function calItemIcon(item){return item.calKind==="appointment"?"📅":"💸"}
+function calItemMeta(item){
+  if(item.calKind==="appointment"){
+    const tm=calTimeLabel(item.bill);
+    return `${tm?`⏰ ${esc(tm)} · `:""}${calIsDone(item)?"✅ Fait":"Rendez-vous"}`;
+  }
+  const paid=item.status?.paidAmount;
+  const real=calIsDone(item)&&paid!=null?Number(paid):null;
+  const planned=Number(item.bill.amount||0);
+  if(calIsDone(item))return `✅ Payé${real!=null&&Math.abs(real-planned)>.005?` · réel ${money(real)}`:""}`;
+  return "À payer";
+}
+function calRow(item,{showDate=false}={}){
+  const done=calIsDone(item), kind=item.calKind;
+  const amount=kind==="payment"?`<div class="cf-amount">${money(item.status?.paidAmount??item.bill.amount)}</div>`:"";
+  const date=showDate?`<div class="cf-datepill">${esc(calShortDate(item.due))}</div>`:"";
+  const complete=!done?`<button class="cf-check" onclick="BP.calComplete('${item.bill.id}','${item.due}')" title="${kind==="appointment"?"Marquer fait":"Marquer payé"}">✓</button>`:`<span class="cf-done">✓</span>`;
+  const edit=`<button class="cf-edit" onclick="BP.calEdit('${item.bill.id}','${item.due}')" title="Modifier">✎</button>`;
+  return `<div class="cf-row ${done?"is-done":""} ${kind}">${date}<div class="cf-icon">${calItemIcon(item)}</div><div class="cf-main"><div class="cf-title">${esc(item.bill.name)}</div><div class="cf-meta">${calItemMeta(item)}${item.bill.note?` · ${esc(item.bill.note)}`:""}</div></div>${amount}<div class="cf-actions">${complete}${edit}</div></div>`;
+}
+
+function ensureCalendarFirstStyles(){
+  if(document.getElementById("calendarFirstStyles"))return;
+  const st=document.createElement("style");st.id="calendarFirstStyles";
+  st.textContent=`
+    body.calendar-first{padding-bottom:88px}
+    body.calendar-first .topbar{padding-bottom:12px;background:linear-gradient(180deg,var(--bg) 75%,transparent)}
+    body.calendar-first .brand{font-size:22px;letter-spacing:.3px}
+    .cf-brandline{font-size:10px;color:var(--muted);font-weight:800;letter-spacing:.7px;text-transform:uppercase;margin-top:3px}
+    .cf-shell{display:flex;flex-direction:column;gap:12px}
+    .cf-hero{position:relative;overflow:hidden;border:1px solid var(--line);border-radius:26px;padding:20px;background:linear-gradient(145deg,var(--card),var(--card2));box-shadow:var(--shadow)}
+    .cf-hero:after{content:"";position:absolute;width:180px;height:180px;border-radius:50%;right:-90px;top:-110px;background:var(--accent);opacity:.10;filter:blur(2px)}
+    .cf-kicker{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);font-weight:900}
+    .cf-datebig{font-size:30px;line-height:1.05;font-weight:950;margin-top:6px;text-transform:capitalize}
+    .cf-herosub{font-size:12px;color:var(--muted);margin-top:7px}
+    .cf-quick{display:grid;grid-template-columns:1.2fr 1fr 1fr;gap:8px;margin-top:16px;position:relative;z-index:1}
+    .cf-qbtn{border:1px solid var(--line);background:var(--card2);color:var(--text);border-radius:15px;padding:12px 8px;font-weight:900;font-size:12px}
+    .cf-qbtn.primary{background:var(--accent)!important;color:var(--accentText)!important}
+    .cf-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+    .cf-stat{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:12px;min-width:0}
+    .cf-stat span{display:block;color:var(--muted);font-size:10px;font-weight:800}
+    .cf-stat strong{display:block;font-size:19px;margin-top:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .cf-section{background:var(--card);border:1px solid var(--line);border-radius:22px;padding:14px;box-shadow:var(--shadow)}
+    .cf-sectionhead{display:flex;justify-content:space-between;align-items:center;margin-bottom:9px}
+    .cf-sectionhead strong{font-size:15px}.cf-sectionhead button{border:0;background:transparent;color:var(--accent);font-weight:900}
+    .cf-empty{padding:18px 10px;text-align:center;color:var(--muted);font-size:12px}
+    .cf-row{display:flex;align-items:center;gap:9px;padding:11px 2px;border-top:1px solid var(--line)}
+    .cf-row:first-child{border-top:0}.cf-row.is-done{opacity:.58}
+    .cf-icon{width:36px;height:36px;display:grid;place-items:center;border-radius:12px;background:var(--card2);font-size:18px;flex:0 0 auto}
+    .cf-main{min-width:0;flex:1}.cf-title{font-weight:900;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.cf-meta{font-size:11px;color:var(--muted);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .cf-amount{font-weight:950;white-space:nowrap}.cf-actions{display:flex;gap:5px}.cf-actions button,.cf-done{width:34px;height:34px;display:grid;place-items:center;border-radius:11px;border:1px solid var(--line);background:var(--card2);color:var(--text);font-weight:950}.cf-check{color:var(--accent)!important}.cf-done{color:var(--ok);font-size:16px}
+    .cf-datepill{font-size:10px;color:var(--muted);width:51px;flex:0 0 51px;font-weight:850;line-height:1.2;text-transform:capitalize}
+    .cf-alert{border-color:rgba(255,107,107,.35);background:linear-gradient(145deg,var(--card),rgba(255,107,107,.05))}
+    .cf-calendar{background:var(--card);border:1px solid var(--line);border-radius:24px;padding:14px;box-shadow:var(--shadow)}
+    .cf-calhead{display:grid;grid-template-columns:42px 1fr 42px;align-items:center;text-align:center;margin-bottom:12px}.cf-calhead strong{text-transform:capitalize;font-size:18px}.cf-calhead button{height:38px;border:1px solid var(--line);border-radius:12px;background:var(--card2);color:var(--text);font-size:22px}
+    .cf-weekdays,.cf-monthgrid{display:grid;grid-template-columns:repeat(7,1fr);gap:5px}.cf-weekdays div{text-align:center;font-size:9px;color:var(--muted);font-weight:900;padding:4px 0}.cf-dayblank{min-height:54px}.cf-day{min-height:58px;border:1px solid transparent;background:var(--card2);color:var(--text);border-radius:13px;padding:7px 4px;text-align:left;position:relative}.cf-day b{font-size:12px}.cf-day.today{border-color:var(--accent)}.cf-day.selected{background:var(--accent);color:var(--accentText)}.cf-daydots{display:flex;gap:3px;margin-top:7px;flex-wrap:wrap}.cf-dot{width:6px;height:6px;border-radius:50%;background:var(--muted)}.cf-dot.pay{background:var(--warn)}.cf-dot.rdv{background:var(--accent)}.cf-day.selected .cf-dot{background:var(--accentText);opacity:.7}
+    .cf-selected-title{font-size:13px;color:var(--muted);text-transform:capitalize;margin:14px 2px 5px;font-weight:850}
+    .cf-importbox{background:linear-gradient(145deg,var(--card),var(--card2));border:1px solid var(--line);border-radius:24px;padding:18px;box-shadow:var(--shadow)}
+    .cf-importbox h2{margin:0 0 5px;font-size:23px}.cf-importbox p{color:var(--muted);font-size:12px;line-height:1.45;margin:0 0 15px}
+    .cf-addgrid{display:grid;grid-template-columns:1fr 1fr;gap:9px}.cf-addgrid button{min-height:84px;border:1px solid var(--line);background:var(--card);color:var(--text);border-radius:20px;font-size:25px;font-weight:900}.cf-addgrid span{display:block;font-size:12px;margin-top:7px}
+    .cf-code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;background:var(--card2);padding:10px;border-radius:12px;color:var(--muted);white-space:pre-wrap;overflow-wrap:anywhere}
+    body.calendar-first #homePage>#overdraftCard,body.calendar-first #homePage>.heroCard,body.calendar-first #homePage>.stats4,body.calendar-first #homePage>#homeBills,body.calendar-first #homePage>.actionGrid,body.calendar-first #homePage>#homeGoals{display:none!important}
+    body.calendar-first #homePage>.sectionTitle{display:none!important}
+    body.calendar-first #calendarPage>.sectionTitle,body.calendar-first #calendarRange,body.calendar-first #calendarList{display:none!important}
+    body.calendar-first #addPage>.sectionTitle,body.calendar-first #addPage>.bigAddList,body.calendar-first #addPage>.card{display:none!important}
+    body.calendar-first .bottomNav{grid-template-columns:repeat(5,1fr)}
+    body.calendar-first .bottomNav button[data-page="summaryPage"]{display:none!important}
+    body.calendar-first .bottomNav button[data-page="homePage"] span:after{content:""}
+    @media(max-width:430px){.cf-datebig{font-size:27px}.cf-quick{grid-template-columns:1.25fr 1fr 1fr}.cf-qbtn{font-size:11px;padding:11px 5px}.cf-stat strong{font-size:16px}.cf-day{min-height:54px;padding:6px 3px}.cf-weekdays,.cf-monthgrid{gap:4px}}
+  `;
+  document.head.appendChild(st);
+}
+
+function ensureCalendarFirst(){
+  ensureCalendarFirstStyles();document.body.classList.add("calendar-first");
+  const brand=document.querySelector(".brand");
+  if(brand&&!document.getElementById("cfBrandLine")){
+    const line=document.createElement("div");line.id="cfBrandLine";line.className="cf-brandline";line.textContent="Calendrier familial · paiements · rappels";brand.insertAdjacentElement("afterend",line);
+  }
+  const plus=document.getElementById("quickExpenseBtn");
+  if(plus&&!plus.dataset.calendarFirst){
+    const clone=plus.cloneNode(true);clone.dataset.calendarFirst="1";clone.setAttribute("aria-label","Import rapide");clone.textContent="＋";clone.onclick=openCalImport;plus.replaceWith(clone);
+  }
+  const home=document.getElementById("homePage");
+  if(home&&!document.getElementById("cfHome")){
+    const host=document.createElement("div");host.id="cfHome";host.className="cf-shell";home.prepend(host);
+  }
+  const cal=document.getElementById("calendarPage");
+  if(cal&&!document.getElementById("cfCalendarHost")){
+    const host=document.createElement("div");host.id="cfCalendarHost";host.className="cf-shell";cal.prepend(host);
+  }
+  const addp=document.getElementById("addPage");
+  if(addp&&!document.getElementById("cfAddHost")){
+    const host=document.createElement("div");host.id="cfAddHost";host.className="cf-shell";addp.prepend(host);
+  }
+  const homeNav=document.querySelector('.bottomNav button[data-page="homePage"] span');if(homeNav)homeNav.textContent="Aujourd’hui";
+  const calNav=document.querySelector('.bottomNav button[data-page="calendarPage"] span');if(calNav)calNav.textContent="Calendrier";
+  const addNav=document.querySelector('.bottomNav button[data-page="addPage"] span');if(addNav)addNav.textContent="Ajouter";
+}
+
+function renderCalendarFirstHome(){
+  const host=document.getElementById("cfHome");if(!host)return;
+  const now=today(), todayItems=calItems(now,now), openToday=todayItems.filter(x=>!calIsDone(x));
+  const up=calUpcoming(7), weekItems=up.filter(x=>x.due!==now).slice(0,8);
+  const overdue=calItems(addDays(now,-60),addDays(now,-1)).filter(x=>!calIsDone(x)&&x.calKind==="payment");
+  const todayHtml=todayItems.length?todayItems.map(x=>calRow(x)).join(""):`<div class="cf-empty">✨ Rien de prévu aujourd’hui.</div>`;
+  const weekHtml=weekItems.length?weekItems.map(x=>calRow(x,{showDate:true})).join(""):`<div class="cf-empty">Rien d’autre dans les 7 prochains jours.</div>`;
+  const overdueHtml=overdue.length?`<div class="cf-section cf-alert"><div class="cf-sectionhead"><strong>⚠️ Paiements en retard</strong><span class="badge red">${overdue.length}</span></div>${overdue.slice(0,6).map(x=>calRow(x,{showDate:true})).join("")}</div>`:"";
+  host.innerHTML=`
+    <div class="cf-hero">
+      <div class="cf-kicker">Aujourd’hui</div>
+      <div class="cf-datebig">${esc(calFullDate(now))}</div>
+      <div class="cf-herosub">Tout ce que tu dois retenir, au même endroit.</div>
+      <div class="cf-quick">
+        <button class="cf-qbtn primary" onclick="BP.openCalImport()">⚡ Importer un code</button>
+        <button class="cf-qbtn" onclick="BP.openCalAppointment()">📅 + RDV</button>
+        <button class="cf-qbtn" onclick="BP.openCalPayment()">💸 + Paiement</button>
+      </div>
+    </div>
+    <div class="cf-stats">
+      <div class="cf-stat"><span>Aujourd’hui</span><strong>${openToday.length}</strong></div>
+      <div class="cf-stat"><span>RDV · 7 jours</span><strong>${calAppointmentCount(7)}</strong></div>
+      <div class="cf-stat"><span>À payer · 7 jours</span><strong>${money(calPaymentTotal(7))}</strong></div>
+    </div>
+    ${overdueHtml}
+    <div class="cf-section"><div class="cf-sectionhead"><strong>📍 Aujourd’hui</strong><button onclick="BP.goCal()">Calendrier →</button></div>${todayHtml}</div>
+    <div class="cf-section"><div class="cf-sectionhead"><strong>🗓️ Les 7 prochains jours</strong><button onclick="BP.goCal()">Voir tout →</button></div>${weekHtml}</div>`;
+}
+
+function calMonthKeyFromCursor(){return `${calMonthCursor.getFullYear()}-${pad(calMonthCursor.getMonth()+1)}`}
+function renderCalendarFirstCalendar(){
+  const host=document.getElementById("cfCalendarHost");if(!host)return;
+  const y=calMonthCursor.getFullYear(),m=calMonthCursor.getMonth(), first=new Date(y,m,1), last=new Date(y,m+1,0);
+  const firstOffset=(first.getDay()+6)%7, days=last.getDate();
+  const start=`${y}-${pad(m+1)}-01`,end=`${y}-${pad(m+1)}-${pad(days)}`;
+  const items=calItems(start,end), byDate={};items.forEach(x=>(byDate[x.due]=byDate[x.due]||[]).push(x));
+  const cells=[];for(let i=0;i<firstOffset;i++)cells.push(`<div class="cf-dayblank"></div>`);
+  for(let d=1;d<=days;d++){
+    const date=`${y}-${pad(m+1)}-${pad(d)}`, list=byDate[date]||[];
+    const dots=list.filter(x=>!calIsDone(x)).slice(0,4).map(x=>`<i class="cf-dot ${x.calKind==="appointment"?"rdv":"pay"}"></i>`).join("");
+    cells.push(`<button class="cf-day ${date===today()?"today":""} ${date===calSelectedDate?"selected":""}" onclick="BP.selectCalDate('${date}')"><b>${d}</b><div class="cf-daydots">${dots}</div></button>`);
+  }
+  const selected=calItems(calSelectedDate,calSelectedDate);
+  const selHtml=selected.length?selected.map(x=>calRow(x)).join(""):`<div class="cf-empty">Aucun rendez-vous ni paiement cette journée.</div>`;
+  const label=new Date(y,m,1).toLocaleDateString("fr-CA",{month:"long",year:"numeric"});
+  host.innerHTML=`<div class="cf-calendar"><div class="cf-calhead"><button onclick="BP.shiftCalMonth(-1)">‹</button><strong>${esc(label)}</strong><button onclick="BP.shiftCalMonth(1)">›</button></div><div class="cf-weekdays"><div>L</div><div>M</div><div>M</div><div>J</div><div>V</div><div>S</div><div>D</div></div><div class="cf-monthgrid">${cells.join("")}</div><div class="cf-selected-title">${esc(calFullDate(calSelectedDate))}</div>${selHtml}<div class="cf-quick" style="margin-top:12px"><button class="cf-qbtn primary" onclick="BP.openCalImport()">⚡ Importer</button><button class="cf-qbtn" onclick="BP.openCalAppointment('${calSelectedDate}')">📅 + RDV</button><button class="cf-qbtn" onclick="BP.openCalPayment('${calSelectedDate}')">💸 + Paiement</button></div></div>`;
+}
+
+function renderCalendarFirstAdd(){
+  const host=document.getElementById("cfAddHost");if(!host)return;
+  host.innerHTML=`<div class="cf-importbox"><div class="cf-kicker">Ajout rapide</div><h2>Dis-le moi, colle le code, terminé.</h2><p>Tu peux m’écrire tes rendez-vous et tes paiements normalement. Je te redonne un code à coller ici et tout se place aux bonnes dates.</p><button class="fullBtn primary" onclick="BP.openCalImport()">⚡ Importer un code CAL</button><div class="cf-code" style="margin-top:10px">CAL|2026-11-06|14:30|RDV|Dentiste Dylan|\nCAL|2026-11-20||PAIEMENT|Hydro|445</div></div><div class="cf-addgrid"><button onclick="BP.openCalAppointment()">📅<span>Ajouter un rendez-vous</span></button><button onclick="BP.openCalPayment()">💸<span>Ajouter un paiement</span></button></div>`;
+}
+function renderCalendarFirst(){
+  ensureCalendarFirst();renderCalendarFirstHome();renderCalendarFirstCalendar();renderCalendarFirstAdd();
+}
+
+function openCalAppointment(defaultDate=today(),editId=null){
+  const b=editId?state.bills.find(x=>x.id===editId):null;
+  const date=b?.dueDate||defaultDate||today(),time=b?.eventTime||"",name=b?.name||"",note=b?.note||"";
+  openModal(`${modalHeader(b?"Modifier le rendez-vous":"📅 Nouveau rendez-vous")}<form id="cfAppointmentForm" class="formGrid"><label class="span2">Rendez-vous<input name="name" value="${calEscapeAttr(name)}" placeholder="Ex. Dentiste Dylan" required autofocus></label><label>Date<input name="date" type="date" value="${calEscapeAttr(date)}" required></label><label>Heure<input name="time" type="time" value="${calEscapeAttr(time)}"></label><label class="span2">Note (facultatif)<input name="note" value="${calEscapeAttr(note)}" placeholder="Adresse, personne à voir..."></label><div class="span2 card" style="margin-top:4px"><strong>🔔 Rappel</strong><div class="sub">Ce rendez-vous utilise le même système de rappels anti-oubli que tes paiements.</div></div><button class="fullBtn primary span2">${b?"Enregistrer":"Ajouter au calendrier"}</button>${b?`<button type="button" class="fullBtn span2" onclick="BP.deleteBill('${b.id}')">🗑️ Supprimer</button>`:""}</form>`);
+  document.getElementById("cfAppointmentForm").onsubmit=e=>{
+    e.preventDefault();const f=new FormData(e.target),d=f.get("date");
+    const obj=b||{id:uid("bill"),statuses:{},createdAt:nowIso()};
+    Object.assign(obj,{name:String(f.get("name")||"").trim(),amount:0,dueDay:Number(String(d).slice(8,10))||1,dueDate:d,startDate:d,category:"Rendez-vous",frequency:"one",variable:false,autopay:false,active:true,activeFrom:d,calendarKind:"appointment",eventTime:f.get("time")||"",note:String(f.get("note")||"").trim(),updatedAt:nowIso()});
+    delete obj.deletedAt;delete obj.endedAt;if(!b)state.bills.push(obj);saveState();closeModal();toast(b?"Rendez-vous modifié ✅":"Rendez-vous ajouté 📅");
+  };
+}
+function openCalPayment(defaultDate=today(),editId=null){
+  const b=editId?state.bills.find(x=>x.id===editId):null;
+  if(b&&b.frequency!=="one")return billForm(b.id);
+  const date=b?.dueDate||defaultDate||today(),name=b?.name||"",amount=b?.amount??"",note=b?.note||"";
+  openModal(`${modalHeader(b?"Modifier le paiement":"💸 Nouveau paiement")}<form id="cfPaymentForm" class="formGrid"><label class="span2">À payer<input name="name" value="${calEscapeAttr(name)}" placeholder="Ex. Hydro" required autofocus></label><label>Montant prévu<input name="amount" type="number" step=".01" inputmode="decimal" value="${calEscapeAttr(amount)}" required></label><label>Date<input name="date" type="date" value="${calEscapeAttr(date)}" required></label><label class="span2">Note (facultatif)<input name="note" value="${calEscapeAttr(note)}"></label><div class="span2 card" style="margin-top:4px"><strong>✓ Montant réel</strong><div class="sub">Quand tu feras ✅, l’app te laissera confirmer ou corriger le vrai montant payé.</div></div><button class="fullBtn primary span2">${b?"Enregistrer":"Ajouter au calendrier"}</button>${b?`<button type="button" class="fullBtn span2" onclick="BP.deleteBill('${b.id}')">🗑️ Supprimer</button>`:""}</form>`);
+  document.getElementById("cfPaymentForm").onsubmit=e=>{
+    e.preventDefault();const f=new FormData(e.target),d=f.get("date"),amt=Number(f.get("amount")||0);if(!Number.isFinite(amt)||amt<0)return toast("Montant invalide");
+    const obj=b||{id:uid("bill"),statuses:{},createdAt:nowIso()};
+    Object.assign(obj,{name:String(f.get("name")||"").trim(),amount:amt,dueDay:Number(String(d).slice(8,10))||1,dueDate:d,startDate:d,category:"Paiement",frequency:"one",variable:false,autopay:false,active:true,activeFrom:d,calendarKind:"payment",calendarFlexible:true,note:String(f.get("note")||"").trim(),updatedAt:nowIso()});
+    delete obj.deletedAt;delete obj.endedAt;if(!b)state.bills.push(obj);saveState();closeModal();toast(b?"Paiement modifié ✅":"Paiement ajouté 💸");
+  };
+}
+function calComplete(id,due){
+  const b=state.bills.find(x=>x.id===id);if(!b)return;
+  if(calKind(b)==="appointment"){
+    setBillStatus(b,due,{paidAt:nowIso(),paidAmount:0,paidBy:profile.memberName||"Moi",calendarDone:true,snoozedUntil:null});toast("Rendez-vous marqué fait ✅");
+  }else payBill(id,due);
+}
+function calEdit(id,due){
+  const b=state.bills.find(x=>x.id===id);if(!b)return;
+  if(calKind(b)==="appointment")return openCalAppointment(due,id);
+  if(b.calendarKind==="payment"&&b.frequency==="one")return openCalPayment(due,id);
+  return billForm(id);
+}
+function selectCalDate(date){calSelectedDate=date;const d=parseLocal(date);calMonthCursor=new Date(d.getFullYear(),d.getMonth(),1);renderCalendarFirstCalendar()}
+function shiftCalMonth(n){calMonthCursor.setMonth(calMonthCursor.getMonth()+Number(n||0));const key=calMonthKeyFromCursor();if(!calSelectedDate.startsWith(key))calSelectedDate=`${key}-01`;renderCalendarFirstCalendar()}
+function goCal(){goPage("calendarPage");renderCalendarFirstCalendar()}
+
+function parseCalCode(text){
+  const lines=String(text||"").split(/\r?\n/).map(x=>x.trim()).filter(Boolean),items=[],errors=[];
+  lines.forEach((line,i)=>{
+    if(line.startsWith("#")||line.startsWith("//"))return;
+    const p=line.split("|").map(x=>x.trim());if(importKey(p[0])!=="CAL"){errors.push(`Ligne ${i+1}: doit commencer par CAL.`);return}
+    const date=p[1],time=p[2]||"",type=importKey(p[3]),title=p[4]||"";
+    if(!validImportDate(date)||!title){errors.push(`Ligne ${i+1}: date ou titre invalide.`);return}
+    if(["RDV","RENDEZ_VOUS","RENDEZVOUS","APPOINTMENT"].includes(type)){
+      if(time&&!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)){errors.push(`Ligne ${i+1}: heure invalide.`);return}
+      items.push({kind:"appointment",date,time,title,note:p.slice(5).join(" | ")});return;
+    }
+    if(["PAIEMENT","PAYMENT","PAYER","FACTURE"].includes(type)){
+      const amount=importTextMoney(p[5]);if(!Number.isFinite(amount)||amount<0){errors.push(`Ligne ${i+1}: montant invalide.`);return}
+      items.push({kind:"payment",date,time:"",title,amount,note:p.slice(6).join(" | ")});return;
+    }
+    errors.push(`Ligne ${i+1}: type ${p[3]||"?"} non reconnu.`);
+  });
+  if(!items.length&&!errors.length)errors.push("Aucune ligne CAL reconnue.");return {items,errors};
+}
+function calDuplicate(item){
+  return (state.bills||[]).some(b=>{
+    if(b.deletedAt||importName(b.name)!==importName(item.title))return false;
+    const occ=billOccurrences(b,item.date,item.date);if(!occ.includes(item.date))return false;
+    if(item.kind==="appointment")return calKind(b)==="appointment"&&String(b.eventTime||"")===String(item.time||"");
+    return calKind(b)==="payment"&&Math.abs(Number(b.amount||0)-Number(item.amount||0))<.01;
+  });
+}
+function openCalImport(){
+  openModal(`${modalHeader("⚡ Import rapide")}<p class="muted small">Colle le code que je t’ai préparé. Les rendez-vous et paiements seront placés aux bonnes dates. Les doublons exacts sont ignorés.</p><div class="cf-code">CAL|2026-11-06|14:30|RDV|Dentiste Dylan|<br>CAL|2026-11-20||PAIEMENT|Hydro|445</div><label>Code à importer<textarea id="calImportText" rows="10" placeholder="Colle les lignes CAL ici"></textarea></label><button id="calPreviewBtn" class="fullBtn primary">Vérifier avant d’importer</button><div id="calImportPreview"></div>`);
+  document.getElementById("calPreviewBtn").onclick=()=>{
+    const parsed=parseCalCode(document.getElementById("calImportText").value),host=document.getElementById("calImportPreview");
+    const errs=parsed.errors.length?`<div class="card"><strong class="dangerText">⚠️ À corriger</strong><div class="sub">${parsed.errors.map(esc).join("<br>")}</div></div>`:"";
+    const cards=parsed.items.map(x=>`<div class="card"><strong>${x.kind==="appointment"?"📅":"💸"} ${esc(x.title)}</strong><div class="sub">${esc(calFullDate(x.date))}${x.time?` · ${esc(x.time)}`:""}${x.kind==="payment"?` · ${money(x.amount)}`:""}${calDuplicate(x)?" · Déjà présent":""}</div></div>`).join("");
+    host.innerHTML=`${errs}${cards}${parsed.errors.length?"":`<button id="calConfirmImport" class="fullBtn primary">✅ Importer ${parsed.items.length} élément(s)</button>`}`;
+    const btn=document.getElementById("calConfirmImport");if(btn)btn.onclick=()=>applyCalImport(parsed);
+  };
+}
+function applyCalImport(parsed){
+  if(parsed.errors?.length)return toast("Corrige les erreurs avant l’import");let added=0,skipped=0;
+  parsed.items.forEach(item=>{
+    if(calDuplicate(item)){skipped++;return}
+    if(item.kind==="appointment")state.bills.push({id:uid("bill"),name:item.title,amount:0,dueDay:Number(item.date.slice(8,10))||1,dueDate:item.date,startDate:item.date,category:"Rendez-vous",frequency:"one",variable:false,autopay:false,active:true,statuses:{},activeFrom:item.date,calendarKind:"appointment",eventTime:item.time||"",note:item.note||"",createdAt:nowIso(),updatedAt:nowIso()});
+    else state.bills.push({id:uid("bill"),name:item.title,amount:Number(item.amount||0),dueDay:Number(item.date.slice(8,10))||1,dueDate:item.date,startDate:item.date,category:"Paiement",frequency:"one",variable:false,autopay:false,active:true,statuses:{},activeFrom:item.date,calendarKind:"payment",calendarFlexible:true,note:item.note||"",createdAt:nowIso(),updatedAt:nowIso()});
+    added++;
+  });
+  saveState();closeModal();toast(`Import terminé ✅ ${added} ajouté(s)${skipped?` · ${skipped} doublon(s)`:""}`);
+}
+
 // ----- events -----
 function on(id,event,handler){const el=$("#"+id);if(el)el.addEventListener(event,handler)}
 document.addEventListener("click",e=>{
@@ -1386,7 +1659,7 @@ on("addCategoryBudgetBtn","click",addCategoryBudget);
 on("seedBtn","click",()=>{if(confirm("Remettre les factures de départ? Ça n'efface pas tes dépenses.")){state.bills=seedBills();saveState();toast("Factures de départ remises")}});
 on("importBtn","click",()=>$("#importFile")?.click());on("importFile","change",e=>e.target.files[0]&&importData(e.target.files[0]));
 
-window.BP={close:closeModal,payBill,snooze,endBill,deleteBill,quickMerchant:s=>expenseForm(decodeURIComponent(s)),editBill:billForm,addGoalMoney,removeCategoryBudget,editHistory,openMonthlyPlan,receiveIncome};
+window.BP={close:closeModal,payBill,snooze,endBill,deleteBill,quickMerchant:s=>expenseForm(decodeURIComponent(s)),editBill:billForm,addGoalMoney,removeCategoryBudget,editHistory,openMonthlyPlan,receiveIncome,openCalImport,openCalAppointment,openCalPayment,calComplete,calEdit,selectCalDate,shiftCalMonth,goCal};
 
 initTheme();migrateTrackingStart();migrateLegacyPlanRetards();migrateOct2026CombinedRemainders();migrateMonthlyPlansToOperational();archiveOld();render();if("serviceWorker" in navigator)navigator.serviceWorker.register("sw.js").catch(()=>{});
 if(profile.token)pullCloud();if(profile.oneSignalAppId)initOneSignal();
