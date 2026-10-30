@@ -1,6 +1,6 @@
 (() => {
 "use strict";
-const BUDGET_PACK_BUILD="2026-10-30-CALENDAR-V3-RDV";
+const BUDGET_PACK_BUILD="2026-10-30-CALENDAR-V4-OUTILS";
 // BUDGET PACK FIX DOUBLONS V2 — 2026-09-27
 const LS_KEY="budgetPackStateV1", PROFILE_KEY="budgetPackProfileV1", THEME_KEY="budgetPackThemeV1";
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
@@ -386,7 +386,7 @@ function renderSettings(){
   ensureOctCleanupButton();
 }
 function updateSyncLine(){
-  const build="CALENDAR-V3";
+  const build="CALENDAR-V4";
   $("#syncLine").textContent=profile.token?`Budget partagé · ${profile.memberName||"connecté"} · ${build}`:`Mode local · ${build}`;
 }
 
@@ -534,7 +534,7 @@ function exportData(){
   const blob=new Blob([JSON.stringify({version:1,exportedAt:nowIso(),state},null,2)],{type:"application/json"}),a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=`budget-pack-${today()}.json`;a.click();URL.revokeObjectURL(a.href)
 }
 function importData(file){
-  const r=new FileReader();r.onload=()=>{try{const j=JSON.parse(r.result);if(!j.state)throw Error();state=j.state;saveState();toast("Sauvegarde importée ✅")}catch{toast("Fichier invalide")}};r.readAsText(file)
+  const r=new FileReader();r.onload=()=>{try{const j=JSON.parse(r.result);if(!j.state)throw Error();state=j.state;applyCalendarFreshStart();saveState();toast("Sauvegarde importée ✅")}catch{toast("Fichier invalide")}};r.readAsText(file)
 }
 
 // ----- Cloud sync -----
@@ -1579,6 +1579,7 @@ function ensureCalendarFirst(){
   const addNav=document.querySelector('.bottomNav button[data-page="addPage"] span');if(addNav)addNav.textContent="Ajouter";
   document.querySelectorAll("#settingsPage .card").forEach(card=>{const h=card.querySelector("h3");if(h&&h.textContent.trim()==="Historique")card.style.display="none"});
   ["budgetImportBtn","monthlyPlanBtn"].forEach(id=>{const el=document.getElementById(id);if(el)el.style.display="none"});
+  renderCalendarSettingsTools();
 }
 
 function renderCalendarFirstHome(){
@@ -1743,6 +1744,111 @@ function applyCalImport(parsed){
   saveState();closeModal();toast(`Import terminé ✅ ${added} ajouté(s)${skipped?` · ${skipped} doublon(s)`:""}`);
 }
 
+
+// ----- Outils du nouveau calendrier -----
+function calendarManagementCard(){
+  return [...document.querySelectorAll("#settingsPage .card")].find(card=>{
+    const h=card.querySelector("h3");
+    const t=(h?.textContent||"").trim();
+    return t==="Gestion"||t==="Outils du calendrier";
+  })||null;
+}
+function renderCalendarSettingsTools(){
+  const card=calendarManagementCard();if(!card)return;
+  card.innerHTML=`
+    <h3>Outils du calendrier</h3>
+    <p class="muted small" style="margin-top:-4px">Les outils utiles pour le nouveau Budget Pack. Ton partage et tes notifications restent intacts.</p>
+    <button type="button" id="calTestNotifBtn" class="fullBtn primary">🔔 Tester mes notifications</button>
+    <button type="button" id="calRecurringBtn" class="fullBtn">🔁 Gérer les paiements récurrents</button>
+    <button type="button" id="calUpcomingRdvBtn" class="fullBtn">📅 Mes prochains rendez-vous</button>
+    <button type="button" id="calCleanDoneBtn" class="fullBtn">🧹 Nettoyer les anciens terminés</button>
+    <div style="height:8px"></div>
+    <button type="button" id="calExportBtn" class="fullBtn">📤 Exporter une sauvegarde</button>
+    <button type="button" id="calImportBackupBtn" class="fullBtn">📥 Importer une sauvegarde</button>
+    <input id="calBackupInput" type="file" accept="application/json" hidden>
+    <details style="margin-top:12px">
+      <summary class="muted small" style="cursor:pointer;padding:8px 2px">Zone avancée</summary>
+      <button type="button" id="calResetBtn" class="fullBtn" style="border-color:rgba(255,107,107,.45);color:var(--danger)">♻️ Réinitialiser le calendrier</button>
+      <div class="sub" style="margin:7px 3px 0">Supprime les RDV et paiements uniques du nouveau calendrier. Les paiements récurrents, le partage et les notifications restent en place.</div>
+    </details>`;
+  document.getElementById("calTestNotifBtn").onclick=testCalendarNotification;
+  document.getElementById("calRecurringBtn").onclick=openRecurringPayments;
+  document.getElementById("calUpcomingRdvBtn").onclick=openUpcomingAppointments;
+  document.getElementById("calCleanDoneBtn").onclick=openCleanCompleted;
+  document.getElementById("calExportBtn").onclick=()=>{exportData();toast("Sauvegarde exportée 📤")};
+  document.getElementById("calImportBackupBtn").onclick=()=>document.getElementById("calBackupInput")?.click();
+  document.getElementById("calBackupInput").onchange=e=>{const f=e.target.files?.[0];if(f)importData(f);e.target.value=""};
+  document.getElementById("calResetBtn").onclick=resetCalendarItems;
+}
+async function testCalendarNotification(){
+  try{
+    if(!("Notification" in window))return toast("Notifications non supportées sur ce téléphone");
+    if(Notification.permission!=="granted"){
+      toast("Active d’abord les notifications avec le gros bouton vert 🔔");
+      return;
+    }
+    const reg=("serviceWorker" in navigator)?await navigator.serviceWorker.ready:null;
+    if(reg?.showNotification){
+      await reg.showNotification("BUDGET PACK 🔔",{body:"Test réussi — tes alertes peuvent s’afficher sur ce téléphone ✅",icon:"icon-192.png",badge:"icon-192.png",tag:"budget-pack-test"});
+    }else{
+      new Notification("BUDGET PACK 🔔",{body:"Test réussi — tes alertes fonctionnent ✅"});
+    }
+    toast("Notification test envoyée 🔔");
+  }catch(e){toast("Impossible d’envoyer le test de notification")}
+}
+function recurringPaymentLabel(b){
+  if(b.frequency==="weekly")return "Chaque semaine";
+  if(b.frequency==="monthly")return `Chaque mois · jour ${Number(b.dueDay||1)}`;
+  return "Récurrent";
+}
+function openRecurringPayments(){
+  const list=(state.bills||[]).filter(b=>b&&!b.deletedAt&&!b.endedAt&&b.frequency!=="one"&&calKind(b)!=="appointment").sort((a,b)=>Number(a.dueDay||99)-Number(b.dueDay||99)||String(a.name||"").localeCompare(String(b.name||""),"fr"));
+  const rows=list.length?list.map(b=>`<div class="card" style="margin-top:8px"><div class="catTop"><strong>${b.active===false?"⏸️":"💸"} ${esc(b.name)}</strong><strong>${money(b.amount)}</strong></div><div class="sub">${esc(recurringPaymentLabel(b))}${b.active===false?" · En pause":""}</div><div class="twoBtns" style="margin-top:8px"><button class="fullBtn" onclick="BP.editRecurringPayment('${b.id}')">✏️ Modifier</button><button class="fullBtn" onclick="BP.toggleRecurringPayment('${b.id}')">${b.active===false?"▶️ Réactiver":"⏸️ Mettre en pause"}</button></div></div>`).join(""):`<div class="card muted">Aucun paiement récurrent.</div>`;
+  openModal(`${modalHeader("🔁 Paiements récurrents")}<p class="muted small">Hydro, assurances, Visa, etc. Tu peux modifier le montant/la date ou mettre un paiement en pause.</p>${rows}`);
+}
+function editRecurringPayment(id){closeModal();billForm(id)}
+function toggleRecurringPayment(id){
+  const b=(state.bills||[]).find(x=>x.id===id);if(!b)return;
+  b.active=b.active===false?true:false;b.updatedAt=nowIso();saveState();openRecurringPayments();toast(b.active?"Paiement réactivé ✅":"Paiement mis en pause ⏸️");
+}
+function openUpcomingAppointments(){
+  const items=calItems(today(),addDays(today(),3650)).filter(x=>x.calKind==="appointment"&&!calIsDone(x));
+  const rows=items.length?items.map(x=>calRow(x,{showDate:true})).join(""):`<div class="card muted">Aucun rendez-vous à venir 🎉</div>`;
+  openModal(`${modalHeader("📅 Mes prochains rendez-vous")}<p class="muted small">Tous tes RDV à venir au même endroit. Tu peux les modifier directement ici.</p>${rows}`);
+}
+function openCleanCompleted(){
+  openModal(`${modalHeader("🧹 Nettoyer les terminés")}<p class="muted small">Supprime seulement les RDV faits et paiements payés <b>avant</b> la date choisie. Les éléments encore à faire ne sont jamais touchés.</p><form id="calCleanDoneForm"><label>Nettoyer les terminés avant le<input name="cutoff" type="date" min="${CALENDAR_FRESH_START}" value="${today()}" required></label><button class="fullBtn primary">🧹 Nettoyer</button></form>`);
+  document.getElementById("calCleanDoneForm").onsubmit=e=>{e.preventDefault();cleanCompletedBefore(new FormData(e.target).get("cutoff"))};
+}
+function cleanCompletedBefore(cutoff){
+  cutoff=String(cutoff||"");if(!validImportDate(cutoff)||cutoff<CALENDAR_FRESH_START)return toast("Date invalide");
+  let count=0;
+  (state.bills||[]).forEach(b=>{
+    if(!b||b.deletedAt)return;
+    if(b.frequency==="one"){
+      const due=b.dueDate||b.startDate||"",st=(b.statuses||{})[due]||{};
+      if(due&&due<cutoff&&st.paidAt){b.deletedAt=nowIso();b.active=false;b.updatedAt=nowIso();count++}
+      return;
+    }
+    const entries=Object.entries(b.statuses||{});let changed=false;
+    entries.forEach(([due,st])=>{if(due<cutoff&&st?.paidAt){delete b.statuses[due];count++;changed=true}});
+    if(changed)b.updatedAt=nowIso();
+  });
+  saveState();closeModal();toast(count?`${count} ancien(s) terminé(s) nettoyé(s) 🧹`:"Rien à nettoyer ✅");
+}
+function resetCalendarItems(){
+  const ok=confirm("♻️ Réinitialiser le calendrier ?\n\nÇa supprimera tous les rendez-vous et paiements UNIQUES du nouveau calendrier.\n\nLes paiements récurrents, le partage et les notifications seront conservés.");
+  if(!ok)return;
+  const ok2=confirm("Dernière confirmation : supprimer tous les RDV et paiements uniques du calendrier ?");if(!ok2)return;
+  let count=0;
+  (state.bills||[]).forEach(b=>{
+    if(!b||b.deletedAt||b.frequency!=="one")return;
+    const due=b.dueDate||b.startDate||"";
+    if(due>=CALENDAR_FRESH_START){b.deletedAt=nowIso();b.active=false;b.updatedAt=nowIso();count++}
+  });
+  saveState();toast(`Calendrier réinitialisé · ${count} élément(s) supprimé(s)`);
+}
+
 // ----- events -----
 function on(id,event,handler){const el=$("#"+id);if(el)el.addEventListener(event,handler)}
 document.addEventListener("click",e=>{
@@ -1765,7 +1871,7 @@ on("addCategoryBudgetBtn","click",addCategoryBudget);
 on("seedBtn","click",()=>{if(confirm("Remettre les factures de départ? Ça n'efface pas tes dépenses.")){state.bills=seedBills();saveState();toast("Factures de départ remises")}});
 on("importBtn","click",()=>$("#importFile")?.click());on("importFile","change",e=>e.target.files[0]&&importData(e.target.files[0]));
 
-window.BP={close:closeModal,payBill,snooze,endBill,deleteBill,quickMerchant:s=>expenseForm(decodeURIComponent(s)),editBill:billForm,addGoalMoney,removeCategoryBudget,editHistory,openMonthlyPlan,receiveIncome,openCalImport,openCalAppointment,openCalPayment,calComplete,calEdit,selectCalDate,shiftCalMonth,setCalFilter,goCal};
+window.BP={close:closeModal,payBill,snooze,endBill,deleteBill,quickMerchant:s=>expenseForm(decodeURIComponent(s)),editBill:billForm,addGoalMoney,removeCategoryBudget,editHistory,openMonthlyPlan,receiveIncome,openCalImport,openCalAppointment,openCalPayment,calComplete,calEdit,selectCalDate,shiftCalMonth,setCalFilter,goCal,editRecurringPayment,toggleRecurringPayment};
 
 initTheme();migrateTrackingStart();migrateLegacyPlanRetards();migrateOct2026CombinedRemainders();migrateMonthlyPlansToOperational();applyCalendarFreshStart();render();if("serviceWorker" in navigator)navigator.serviceWorker.register("sw.js").catch(()=>{});
 if(profile.token)pullCloud();if(profile.oneSignalAppId)initOneSignal();
