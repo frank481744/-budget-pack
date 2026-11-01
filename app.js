@@ -1,6 +1,6 @@
 (() => {
 "use strict";
-const BUDGET_PACK_BUILD="2026-10-30-CALENDAR-V4-OUTILS";
+const BUDGET_PACK_BUILD="2026-11-01-CALENDAR-V5-DEDUP";
 // BUDGET PACK FIX DOUBLONS V2 — 2026-09-27
 const LS_KEY="budgetPackStateV1", PROFILE_KEY="budgetPackProfileV1", THEME_KEY="budgetPackThemeV1";
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
@@ -386,7 +386,7 @@ function renderSettings(){
   ensureOctCleanupButton();
 }
 function updateSyncLine(){
-  const build="CALENDAR-V4";
+  const build="CALENDAR-V5";
   $("#syncLine").textContent=profile.token?`Budget partagé · ${profile.memberName||"connecté"} · ${build}`:`Mode local · ${build}`;
 }
 
@@ -563,6 +563,53 @@ function mergeState(local,remote){
   const settings=String(local.settings?.updatedAt||"")>=String(remote.settings?.updatedAt||"")?local.settings:remote.settings;
   return {...remote,...local,settings,bills:mergeById(local.bills,remote.bills),transactions:mergeById(local.transactions,remote.transactions),incomeSchedules:mergeById(local.incomeSchedules,remote.incomeSchedules),goals:mergeById(local.goals,remote.goals),monthlyPlans:mergeMonthlyPlans(local.monthlyPlans,remote.monthlyPlans),archives:{...(remote.archives||{}),...(local.archives||{})},updatedAt:nowIso()}
 }
+// ----- Protection anti-doublons des paiements récurrents -----
+function recurringPaymentDuplicateKey(b){
+  if(!b||b.deletedAt||b.endedAt||b.active===false||b.frequency==="one"||calKind(b)==="appointment")return "";
+  const name=String(b.name||"").trim().normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase().replace(/\s+/g," ");
+  if(!name)return "";
+  const amountCents=Math.round(Number(b.amount||0)*100);
+  if(!Number.isFinite(amountCents))return "";
+  const freq=String(b.frequency||"monthly").toLowerCase();
+  const day=freq==="weekly"?`w${Number(b.weekday??-1)}`:`d${Number(b.dueDay||1)}`;
+  return `${name}|${amountCents}|${freq}|${day}`;
+}
+function mergeDuplicateStatuses(keeper,duplicate){
+  keeper.statuses=keeper.statuses||{};
+  Object.entries(duplicate.statuses||{}).forEach(([due,st])=>{
+    const old=keeper.statuses[due];
+    if(!old){keeper.statuses[due]=st;return}
+    const oldStamp=String(old.updatedAt||old.paidAt||"");
+    const newStamp=String(st?.updatedAt||st?.paidAt||"");
+    if(newStamp>oldStamp)keeper.statuses[due]=st;
+  });
+}
+function dedupeRecurringPayments(){
+  const groups=new Map();
+  (state.bills||[]).forEach(b=>{
+    const key=recurringPaymentDuplicateKey(b);if(!key)return;
+    const list=groups.get(key)||[];list.push(b);groups.set(key,list);
+  });
+  let removed=0;
+  for(const list of groups.values()){
+    if(list.length<2)continue;
+    // Choix déterministe : plus de statuts d'abord, puis ID stable.
+    list.sort((a,b)=>Object.keys(b.statuses||{}).length-Object.keys(a.statuses||{}).length||String(a.id||"").localeCompare(String(b.id||"")));
+    const keeper=list[0];
+    for(const dup of list.slice(1)){
+      mergeDuplicateStatuses(keeper,dup);
+      dup.active=false;
+      dup.deletedAt=dup.deletedAt||nowIso();
+      dup.duplicateOf=keeper.id;
+      dup.updatedAt=nowIso();
+      removed++;
+    }
+    if(removed){keeper.updatedAt=nowIso()}
+  }
+  if(removed){state.updatedAt=nowIso();localStorage.setItem(LS_KEY,JSON.stringify(state))}
+  return removed;
+}
+
 async function pullCloud(){
   if(!profile.token||!apiBase()||cloudBusy)return;cloudBusy=true;
   try{
@@ -572,9 +619,11 @@ async function pullCloud(){
       // Nouveau mode calendrier : coupe définitivement tout ce qui est avant le 30 oct. 2026.
       const freshCleaned=applyCalendarFreshStart();
       // Conserve les anciennes protections de migration, puis recoupe le passé au besoin.
-      const cleaned=!!(migrateLegacyPlanRetards()|migrateOct2026CombinedRemainders()|freshCleaned);
+      const legacyCleaned=!!(migrateLegacyPlanRetards()|migrateOct2026CombinedRemainders()|freshCleaned);
       migrateMonthlyPlansToOperational();
       applyCalendarFreshStart();
+      const recurringCleaned=dedupeRecurringPayments();
+      const cleaned=legacyCleaned||recurringCleaned>0;
       profile.cloudVersion=j.version||0;saveProfile();
       localStorage.setItem(LS_KEY,JSON.stringify(state));
       render();
@@ -596,6 +645,7 @@ async function pushCloud(force=false){
       migrateOct2026CombinedRemainders();
       migrateMonthlyPlansToOperational();
       applyCalendarFreshStart();
+      dedupeRecurringPayments();
       profile.cloudVersion=e.data.version;saveProfile();localStorage.setItem(LS_KEY,JSON.stringify(state));cloudBusy=false;return pushCloud(true)
     }
     $("#syncLine").textContent="Sync à vérifier";console.warn(e)
@@ -1873,7 +1923,7 @@ on("importBtn","click",()=>$("#importFile")?.click());on("importFile","change",e
 
 window.BP={close:closeModal,payBill,snooze,endBill,deleteBill,quickMerchant:s=>expenseForm(decodeURIComponent(s)),editBill:billForm,addGoalMoney,removeCategoryBudget,editHistory,openMonthlyPlan,receiveIncome,openCalImport,openCalAppointment,openCalPayment,calComplete,calEdit,selectCalDate,shiftCalMonth,setCalFilter,goCal,editRecurringPayment,toggleRecurringPayment};
 
-initTheme();migrateTrackingStart();migrateLegacyPlanRetards();migrateOct2026CombinedRemainders();migrateMonthlyPlansToOperational();applyCalendarFreshStart();render();if("serviceWorker" in navigator)navigator.serviceWorker.register("sw.js").catch(()=>{});
+initTheme();migrateTrackingStart();migrateLegacyPlanRetards();migrateOct2026CombinedRemainders();migrateMonthlyPlansToOperational();applyCalendarFreshStart();dedupeRecurringPayments();render();if("serviceWorker" in navigator)navigator.serviceWorker.register("sw.js").catch(()=>{});
 if(profile.token)pullCloud();if(profile.oneSignalAppId)initOneSignal();
 setInterval(()=>{if(profile.token&&document.visibilityState==="visible")pullCloud()},30000);
 document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible"&&profile.token)pullCloud()});
