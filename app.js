@@ -1,6 +1,6 @@
 (() => {
 "use strict";
-const BUDGET_PACK_BUILD="2026-11-01-CALENDAR-V5-DEDUP";
+const BUDGET_PACK_BUILD="2026-11-01-CALENDAR-V6-PUSH-LINK";
 // BUDGET PACK FIX DOUBLONS V2 — 2026-09-27
 const LS_KEY="budgetPackStateV1", PROFILE_KEY="budgetPackProfileV1", THEME_KEY="budgetPackThemeV1";
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
@@ -661,15 +661,24 @@ async function joinFamily(){
 }
 function leaveCloud(){if(!confirm("Déconnecter ce téléphone du budget partagé? Les données locales restent ici."))return;profile={...profile,token:"",memberId:"",familyId:"",joinCode:"",cloudVersion:0};saveProfile();render();toast("Téléphone déconnecté")}
 async function initOneSignal(){
-  const appId=profile.oneSignalAppId;if(!appId||oneSignalReady)return;
+  const appId=profile.oneSignalAppId;if(!appId)return;
   window.OneSignalDeferred=window.OneSignalDeferred||[];
   window.OneSignalDeferred.push(async OneSignal=>{
-    try{const swUrl=new URL("push/onesignal/OneSignalSDKWorker.js",location.href), swPath=swUrl.pathname.replace(/^\//,""), swScope=swUrl.pathname.replace(/OneSignalSDKWorker\.js$/,"");await OneSignal.init({appId,serviceWorkerPath:swPath,serviceWorkerParam:{scope:swScope}});if(profile.memberId)await OneSignal.login(profile.memberId);oneSignalReady=true}catch(e){console.warn("OneSignal",e)}
+    try{
+      if(!oneSignalReady){
+        const swUrl=new URL("push/onesignal/OneSignalSDKWorker.js",location.href), swPath=swUrl.pathname.replace(/^\//,""), swScope=swUrl.pathname.replace(/OneSignalSDKWorker\.js$/,"");
+        await OneSignal.init({appId,serviceWorkerPath:swPath,serviceWorkerParam:{scope:swScope}});
+        oneSignalReady=true;
+      }
+      // Important : refaire le lien avec le membre Budget Pack même si OneSignal
+      // était déjà initialisé (ex. téléphone activé avant de rejoindre le partage).
+      if(profile.memberId)await OneSignal.login(profile.memberId);
+    }catch(e){console.warn("OneSignal",e)}
   })
 }
 async function enablePush(){
   profile.oneSignalAppId=$("#oneSignalAppId").value.trim();saveProfile();if(!profile.oneSignalAppId)return toast("Ajoute le OneSignal App ID");
-  await initOneSignal();window.OneSignalDeferred=window.OneSignalDeferred||[];window.OneSignalDeferred.push(async OneSignal=>{try{if(profile.memberId)await OneSignal.login(profile.memberId);await OneSignal.Notifications.requestPermission();toast("Notifications activées 🔔")}catch(e){toast("Impossible d'activer les notifications")}})
+  await initOneSignal();window.OneSignalDeferred=window.OneSignalDeferred||[];window.OneSignalDeferred.push(async OneSignal=>{try{if(profile.memberId)await OneSignal.login(profile.memberId);await OneSignal.Notifications.requestPermission();if(profile.memberId)await OneSignal.login(profile.memberId);toast("Notifications activées et reliées 🔔")}catch(e){toast("Impossible d'activer les notifications")}})
 }
 
 // ----- settings / nav -----
@@ -1926,5 +1935,5 @@ window.BP={close:closeModal,payBill,snooze,endBill,deleteBill,quickMerchant:s=>e
 initTheme();migrateTrackingStart();migrateLegacyPlanRetards();migrateOct2026CombinedRemainders();migrateMonthlyPlansToOperational();applyCalendarFreshStart();dedupeRecurringPayments();render();if("serviceWorker" in navigator)navigator.serviceWorker.register("sw.js").catch(()=>{});
 if(profile.token)pullCloud();if(profile.oneSignalAppId)initOneSignal();
 setInterval(()=>{if(profile.token&&document.visibilityState==="visible")pullCloud()},30000);
-document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible"&&profile.token)pullCloud()});
+document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible"){if(profile.token)pullCloud();if(profile.oneSignalAppId&&profile.memberId)initOneSignal()}});
 })();
