@@ -9,7 +9,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <link rel="icon" type="image/png" href="./beast-icon.png?v=729">
 <link rel="apple-touch-icon" href="./beast-icon.png?v=729">
-<title>BEAST TRACK X — V9.36 CORE DANS ACTIVITÉS + BILANS</title>
+<title>BEAST TRACK X — V9.37 SOMMEIL + SANTÉ SÉPARÉS</title>
 <!-- Lecteur code-barres gratuit chargé seulement à l’ouverture du scanner : saisie locale autonome. -->
 <style>
 :root{--blue:#49a7ff;--orange:#ffad3c;--red:#ff7d7d}
@@ -1815,6 +1815,22 @@ body{
 @media(max-width:360px){.v919SuiviHero h2{font-size:27px}.v919SectionIntro b{font-size:14px}#suivi .cleanMegaBody{padding-left:9px!important;padding-right:9px!important}}
 
 
+
+/* V9.37 — Sommeil et Santé réellement indépendants; accueil compact */
+#suivi>#healthTodayCard{margin:0 0 8px!important;border:1px solid rgba(255,135,145,.24)!important;border-radius:17px!important}
+#suivi>#healthTodayCard>summary{min-height:66px!important}
+#suivi>#healthTodayCard.trackDoneCard{border-color:rgba(124,255,0,.38)!important}
+#suivi>#healthTodayCard .healthStatus{line-height:1.55}
+#todayTrackingGrid .todayTrackItem{font-family:inherit;cursor:default}
+#todayTrackingGrid button.todayTrackItem{width:100%;text-align:left;cursor:pointer;appearance:none;box-shadow:none!important;font-size:inherit;min-height:34px;margin:0;padding:7px 8px!important;border-radius:11px!important;background:#0d110e!important;color:#b5beb8!important;border:1px solid #2b332e!important}
+#todayTrackingGrid button.todayTrackItem.done{border-color:rgba(124,255,0,.38)!important;background:rgba(124,255,0,.055)!important}
+#todayTrackingGrid button.todayTrackItem.partial{border-color:rgba(255,185,64,.65)!important;background:rgba(255,173,54,.10)!important}
+#todayTrackingGrid button.todayTrackItem:focus-visible{outline:2px solid #6fdaf3;outline-offset:2px}
+#todayTrackingGrid .todayTrackItem.partial{border-color:rgba(255,185,64,.65);background:rgba(255,173,54,.10)}
+#todayTrackingGrid .todayTrackItem.partial b{color:#ffbf65}
+#todayTrackingGrid .todayTrackItem b{white-space:nowrap}
+#todayTrackingGrid .v937HealthHint{display:block;color:#ffcb8a;font-size:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:700;margin-top:1px}
+
 /* V9.23 — Petit repère, sans changer les cartes ni le suivi des séries. */
 .gymRecentTop{margin-top:3px;color:#b6ff65;font-weight:850;font-size:10px;line-height:1.2;letter-spacing:0;overflow-wrap:anywhere}
 .gymRecentTop b{font-weight:950;color:#c7ff88}
@@ -2215,7 +2231,7 @@ body{
 <div class="cyberTopBar">
   <div>
     <h1>BEAST <span>TRACK X</span></h1>
-    <div class="cyberSubBadge"><i>⚡</i> ARENA V9.36 • CORE BEAST PRO</div>
+    <div class="cyberSubBadge"><i>⚡</i> ARENA V9.37 • CORE BEAST PRO</div>
   </div>
   <button type="button" class="cyberStatusOrb" onclick="trainingGo()" aria-label="Démarrer mon entraînement">
     <span class="orbDot"></span>
@@ -2226,7 +2242,7 @@ body{
 <section class="page active homeClean" id="home">
 <div class="v918HomeHero" id="v918HomeHero">
 <div aria-hidden="true" class="v918HeroWolf" id="v918HomeWolf"></div>
-<div class="v918Eyebrow"><span class="v918LiveDot"></span> BEAST TRACK X <span class="v918Version">V9.36</span></div>
+<div class="v918Eyebrow"><span class="v918LiveDot"></span> BEAST TRACK X <span class="v918Version">V9.37</span></div>
 <h2>TA JOURNÉE <span>BEAST.</span></h2>
 <p id="v918HomeDate">Aujourd’hui • tableau de bord</p>
 <div class="v918HeroPhase"><span>📆 PROGRAMME</span><b id="v918HomePhase">BEAST 365</b></div>
@@ -2257,7 +2273,7 @@ body{
 </div>
 </div>
 <div class="card" id="todayTrackingCard">
-<div class="row between"><div><b>✅ Suivi d’aujourd’hui</b><div class="muted" style="font-size:10px;margin-top:2px">Tu vois tout de suite ce qui est déjà entré</div></div><span class="pill" id="todayTrackingCount">0/7</span></div>
+<div class="row between"><div><b>✅ Suivi d’aujourd’hui</b><div class="muted" style="font-size:10px;margin-top:2px">Tu vois tout de suite ce qui est déjà entré</div></div><span class="pill" id="todayTrackingCount">0/8</span></div>
 <div class="todayTrackingGrid" id="todayTrackingGrid"></div>
 </div>
 <div class="card cyberMacroCard" id="nutritionTodayCard">
@@ -2363,7 +2379,7 @@ body{
 
 <div class="v918MealHero">
 <div aria-hidden="true" class="v918MealHeroGlow">⚡</div>
-<div class="v918Eyebrow"><span class="v918LiveDot"></span> BEAST NUTRITION <span class="v918Version">V9.36</span></div>
+<div class="v918Eyebrow"><span class="v918LiveDot"></span> BEAST NUTRITION <span class="v918Version">V9.37</span></div>
 <h2>REPAS <span>EXPRESS.</span></h2>
 <div class="v918MealHeroSub">Ton suivi, rapide et sans abonnement.</div>
 <div class="v918MealStats">
@@ -2826,11 +2842,11 @@ ENDPROGRAM"></textarea>
 
 
 
-<div class="v919SuiviHero"><div class="v919HeroKicker">⚡ BEAST TRACK X • V9.36</div><h2>TON <span>SUIVI.</span></h2><p>Santé, activités, corps et récupération au même endroit.</p></div><button type="button" class="b935Entry" onclick="go('corepro')"><div class="b935EntryIcon">🧱</div><div class="b935EntryText"><b>CORE <em>BEAST PRO</em></b><small>Abdos • programmes au choix • Moi/Max • facultatif</small><span id="b935EntrySub">30 min · 6 exercices · 18 séries</span></div><span class="b935EntryArrow">▶</span></button><div class="v919SectionIntro"><span>⚡</span><div><b>Mes suivis essentiels</b><small>Corps • sommeil • activité</small></div></div><button class="suiviEntry" onclick="go('weight')" type="button"><span class="suiviIcon">⚖️</span><span><b>Poids &amp; composition</b><small id="suiviWeightSummary">Dernière pesée —</small></span><span class="suiviArrow">›</span></button><details class="v930SleepFold" id="v930SleepFold"><summary><span>🌙 <b>SOMMEIL BEAST PRO</b><small>Sommeil, score, phases et récupération</small></span><span class="v930FoldArrow">Ouvrir</span></summary><div id="v919HealthMount">
+<div class="v919SuiviHero"><div class="v919HeroKicker">⚡ BEAST TRACK X • V9.37</div><h2>TON <span>SUIVI.</span></h2><p>Santé, activités, corps et récupération au même endroit.</p></div><button type="button" class="b935Entry" onclick="go('corepro')"><div class="b935EntryIcon">🧱</div><div class="b935EntryText"><b>CORE <em>BEAST PRO</em></b><small>Abdos • programmes au choix • Moi/Max • facultatif</small><span id="b935EntrySub">30 min · 6 exercices · 18 séries</span></div><span class="b935EntryArrow">▶</span></button><div class="v919SectionIntro"><span>⚡</span><div><b>Mes suivis essentiels</b><small>Corps • sommeil • activité</small></div></div><button class="suiviEntry" onclick="go('weight')" type="button"><span class="suiviIcon">⚖️</span><span><b>Poids &amp; composition</b><small id="suiviWeightSummary">Dernière pesée —</small></span><span class="suiviArrow">›</span></button><details class="v930SleepFold" id="v930SleepFold"><summary><span>🌙 <b>SOMMEIL BEAST PRO</b><small>Sommeil, score, phases et récupération</small></span><span class="v930FoldArrow">Ouvrir</span></summary><div id="v919HealthMount">
 <!-- V9.23: données de sommeil intégrées à Santé, sans dupliquer le stockage -->
 <div aria-label="Sommeil Beast Pro" class="card" id="beastSleepPro">
 <div class="bsHead">
-<div><div class="bsKicker">🌙 RÉCUPÉRATION • V9.36</div><h3>SOMMEIL <span style="color:#a2ff45">BEAST PRO</span></h3><div class="bsHint">Comprendre tes nuits, pas seulement compter les heures.</div></div>
+<div><div class="bsKicker">🌙 RÉCUPÉRATION • V9.37</div><h3>SOMMEIL <span style="color:#a2ff45">BEAST PRO</span></h3><div class="bsHint">Comprendre tes nuits, pas seulement compter les heures.</div></div>
 <input aria-label="Date de la nuit" class="bsNightPick" id="bsDate" onchange="bsDateChanged()" type="date"/>
 </div>
 <div class="bsSummary">
@@ -2859,9 +2875,10 @@ ENDPROGRAM"></textarea>
 </div></details>
 <div class="bsNote">100 % local et gratuit • Le sommeil est enregistré à la date du réveil • N'efface pas les anciennes données Santé.</div>
 </div>
+</div></details>
 <details class="card healthCard cleanMegaDetails" id="healthTodayCard">
 <summary class="cleanMegaSummary">
-<div><b>❤️ Santé</b><div class="muted" style="font-size:10px;margin-top:2px">Calories brûlées • pas • FC repos</div></div>
+<div><b>❤️ Santé • calories &amp; pas</b><div class="muted" style="font-size:10px;margin-top:2px">Deux données à saisir • FC repos facultative • distinct du sommeil</div></div>
 <span class="pill" id="healthBadge">Manuel ✍️</span>
 </summary>
 <div class="cleanMegaBody">
@@ -2899,7 +2916,7 @@ ENDPROGRAM"></textarea>
 </details>
 </div>
 </details>
-</div></details><div class="v919SectionIntro"><span>🔥</span><div><b>Activités &amp; mouvement</b><small>Course • vélo • marche • gym libre • CORE automatique</small></div></div><div id="v919ActivityMount">
+<div class="v919SectionIntro"><span>🔥</span><div><b>Activités &amp; mouvement</b><small>Course • vélo • marche • gym libre • CORE automatique</small></div></div><div id="v919ActivityMount">
 <details class="card cleanMegaDetails activityMega" id="activityTodayCard">
 <summary class="cleanMegaSummary"><div><b>🔥 Activité</b><div class="muted" style="font-size:10px;margin-top:2px">Course • marche • vélo • rando • gym libre • CORE auto</div></div><span class="pill" id="activityDoneBadge">○ Aucun</span></summary>
 <div class="cleanMegaBody">
@@ -3054,7 +3071,7 @@ BEASTBODY|2026-10-28|weight=156.5|fat=16.8|muscle=124.9|water=57.4" spellcheck="
 </details>
 </div></details></section>
 
-<section id="corepro" class="page b935Page" aria-label="CORE BEAST PRO"><div class="b935Top"><button type="button" class="b935Back" onclick="go('suivi')">‹ Suivi</button><span class="b935TopBrand">🐺 BEAST TRACK X</span><span class="b935TopVer">V9.36</span></div><div class="b935Hero"><div class="b935HeroKicker">SÉANCE ABDOS • INDÉPENDANTE</div><h2>CORE <span>BEAST PRO</span></h2><p>Ton 4e entraînement facultatif · Moi et Max · aucun changement à BEAST 365</p></div><div id="b935Mount" aria-live="polite"></div></section>
+<section id="corepro" class="page b935Page" aria-label="CORE BEAST PRO"><div class="b935Top"><button type="button" class="b935Back" onclick="go('suivi')">‹ Suivi</button><span class="b935TopBrand">🐺 BEAST TRACK X</span><span class="b935TopVer">V9.37</span></div><div class="b935Hero"><div class="b935HeroKicker">SÉANCE ABDOS • INDÉPENDANTE</div><h2>CORE <span>BEAST PRO</span></h2><p>Ton 4e entraînement facultatif · Moi et Max · aucun changement à BEAST 365</p></div><div id="b935Mount" aria-live="polite"></div></section>
 <section id="mobility" class="page">
 <button type="button" class="followBack" onclick="go('training')">← Retour à BEAST GYM PRO</button>
 <div class="prepHero">
@@ -3212,7 +3229,7 @@ BEASTBODY|2026-10-28|weight=156.5|fat=16.8|muscle=124.9|water=57.4" spellcheck="
 
 
 
-<div class="v930HistoryHero"><div class="v930HistoryEyebrow">⚡ BEAST TRACK X • V9.36</div><h2>HISTORIQUE <span>BEAST</span></h2><p>Tes performances, tes repas et ta progression au même endroit.</p></div><div class="card">
+<div class="v930HistoryHero"><div class="v930HistoryEyebrow">⚡ BEAST TRACK X • V9.37</div><h2>HISTORIQUE <span>BEAST</span></h2><p>Tes performances, tes repas et ta progression au même endroit.</p></div><div class="card">
 <label>Afficher</label>
 <select id="historyDays" onchange="history()"><option value="7">7 derniers jours</option><option value="30">30 jours</option><option value="365">12 mois</option><option value="all">Tout ce qui est conservé</option></select>
 </div><div class="card">
@@ -4148,8 +4165,11 @@ function renderHealth(){
   $('healthBadge').textContent='Manuel ✍️';
   if(has){
     const bits=[];if(num(h.activeKcal)>0)bits.push(`${Math.round(h.activeKcal)} kcal actives`);if(num(h.restingKcal)>0)bits.push(`${Math.round(h.restingKcal)} kcal repos`);
-    $('healthStatus').textContent=`Saisi manuellement${bits.length?' • '+bits.join(' + '):''}.`;
-  }else $('healthStatus').textContent='Aucune donnée Santé entrée aujourd’hui.';
+    const readyCal=num(h.totalKcal)>0||num(h.activeKcal)>0;
+    const readySteps=num(h.steps)>0;
+    const missing=[!readyCal?'🔥 calories brûlées':null,!readySteps?'👣 pas':null].filter(Boolean);
+    $('healthStatus').textContent=missing.length?`⚠️ Encore à saisir : ${missing.join(' et ')}. FC au repos facultative.`:`✅ Calories brûlées et pas renseignés.${bits.length?' • '+bits.join(' + '):''}`;
+  }else $('healthStatus').textContent='⚠️ Calories brûlées et pas à saisir. Ton sommeil ne valide plus Santé.';
   fillHealthManual();
 }
 
@@ -4575,25 +4595,53 @@ function scaleDailyTrendText(date){
   }).filter(Boolean);
   return rows.length?rows.join('\n'):'Pesée présente, mais aucune donnée de composition corporelle entrée ce jour.';
 }
+// V9.37 : raccourcis directs sans ouvrir Santé pour le sommeil (et inversement).
+function v937OpenTracking(which){
+  go('suivi');
+  if(which==='sleep'){
+    const sleep=$('v930SleepFold');if(sleep)sleep.open=true;
+    const editor=$('bsEditor');if(editor)editor.open=true;
+    requestAnimationFrame(()=>$('v930SleepFold')?.scrollIntoView({behavior:'smooth',block:'start'}));
+  }else if(which==='health'){
+    const health=$('healthTodayCard');if(health)health.open=true;
+    const form=$('healthManualDetails');if(form)form.open=true;
+    requestAnimationFrame(()=>$('healthTodayCard')?.scrollIntoView({behavior:'smooth',block:'start'}));
+  }
+}
 function renderCompletionStatus(){
   const date=today(),meals=getM().filter(x=>x.date===date),water=waterForDate(date),health=healthForDate(date),weight=getW().some(x=>x.date===date&&num(x.weight)>0),activity=(getA().some(x=>x.date===date&&isRealActivity(x))||b936CoreActivities(date,date).length>0),training=getT().some(x=>x.date===date);
-  const healthDone=Object.keys(health||{}).some(k=>!['importedAt','source'].includes(k)&&num(health[k])>0);
+  // Ces deux champs sont essentiels; la fréquence cardiaque au repos est facultative.
+  // IMPORTANT : sleepMin, sleepScore, beastSleep et les métadonnées ne complètent JAMAIS Santé.
+  const sleepDone=num(health.sleepMin)>0;
+  const caloriesDone=num(health.totalKcal)>0||num(health.activeKcal)>0;
+  const stepsDone=num(health.steps)>0;
+  const healthDone=caloriesDone&&stepsDone;
+  const healthPart=Number(caloriesDone)+Number(stepsDone);
+  const healthMissing=[!caloriesDone?'🔥 kcal':null,!stepsDone?'👣 pas':null].filter(Boolean).join(' + ');
   const items=[
     ['🍽️ Repas',meals.length>0,meals.length?`${meals.length} enregistré${meals.length>1?'s':''}`:'Rien entré'],
     ['💧 Eau',water>0,water>=WATER_GOAL?'Objectif atteint':water>0?`${formatWater(water)} suivi`:'Rien entré'],
-    ['❤️ Santé',healthDone,healthDone?'Données entrées':'Rien entré'],
+    ['🌙 Sommeil',sleepDone,sleepDone?'Nuit enregistrée':'Nuit non entrée','sleep'],
+    ['❤️ Santé',healthDone,healthDone?'Calories et pas saisis':`À compléter : ${healthMissing}`,'health'],
     ['⚖️ Poids',weight,weight?'Pesée entrée':'Rien entré'],
     ['🔥 Activité',activity,activity?'Activité entrée':'Aucune'],
     ['🏋️ Training',training,training?'Séance entrée':'Aucune'],
     ['📓 Journal',beastHasJournal(date),beastHasJournal(date)?'Journal rempli':'Rien entré']
   ];
   const done=items.filter(x=>x[1]).length,grid=$('todayTrackingGrid'),count=$('todayTrackingCount');
-  if(grid)grid.innerHTML=items.map(([label,ok,text])=>`<div class="todayTrackItem ${ok?'done':''}" title="${esc(text)}"><span>${label}</span><b>${ok?'✅':'—'}</b></div>`).join('');
+  if(grid)grid.innerHTML=items.map(([label,ok,description,action])=>{
+    const partial=action==='health'&&!ok&&healthPart>0;
+    const status=action==='health'&&!ok?(healthPart+'/2'):(ok?'✅':'—');
+    const classes=`todayTrackItem ${ok?'done':''} ${partial?'partial':''}`;
+    const hint=action==='health'&&!ok?`<small class="v937HealthHint">${esc(healthMissing)}</small>`:'';
+    // Le sommeil et Santé ouvrent chacun leur propre fiche, sans chercher dans les menus.
+    return action?`<button type="button" class="${classes}" aria-label="${esc(label+' : '+description)}" onclick="v937OpenTracking('${action}')"><span>${label}${hint}</span><b>${status}</b></button>`:`<div class="${classes}" title="${esc(description)}"><span>${label}</span><b>${status}</b></div>`;
+  }).join('');
   if(count){count.textContent=`${done}/${items.length}`;count.classList.toggle('doneBadge',done>0)}
   const setCard=(id,ok)=>{const el=$(id);if(el)el.classList.toggle('trackDoneCard',!!ok)};
   setCard('nutritionTodayCard',meals.length>0);setCard('waterTodayCard',water>0);setCard('healthTodayCard',healthDone);setCard('weightEntryCard',weight);setCard('activityTodayCard',activity);
   if($('nutritionDoneBadge')){$('nutritionDoneBadge').textContent=meals.length?'✅ Entré':'○ À entrer';$('nutritionDoneBadge').classList.toggle('doneBadge',meals.length>0)}
-  if($('healthBadge')){$('healthBadge').textContent=healthDone?'✅ Santé faite':'○ À entrer';$('healthBadge').classList.toggle('doneBadge',healthDone)}
+  if($('healthBadge')){$('healthBadge').textContent=healthDone?'✅ Calories + pas':healthPart?`⚠️ ${healthPart}/2 à entrer`:'○ Calories + pas à entrer';$('healthBadge').classList.toggle('doneBadge',healthDone)}
   if($('weightTodayBadge')){$('weightTodayBadge').textContent=weight?'✅ Aujourd’hui':'○ Aujourd’hui';$('weightTodayBadge').classList.toggle('doneBadge',weight)}
   if($('activityDoneBadge')){$('activityDoneBadge').textContent=activity?'✅ Entrée':'○ Aucune';$('activityDoneBadge').classList.toggle('doneBadge',activity)}
   const jDone=beastHasJournal(date);setCard('journalEntryMainCard',jDone);if($('journalTodayBadge')){$('journalTodayBadge').textContent=jDone?'✅ Aujourd’hui':'○ Aujourd’hui';$('journalTodayBadge').classList.toggle('doneBadge',jDone)}
@@ -4743,12 +4791,14 @@ function renderDailyCoach(){
   if(d.t.n===0)alerts.push('aucun repas');
   if(proteinLeft>0)alerts.push(`${proteinLeft} g protéines`);
   if(waterLeft>0.05)alerts.push(`${waterLeft.toFixed(2).replace('.',',')} L eau`);
+  if(!(num(d.h?.totalKcal)>0||num(d.h?.activeKcal)>0))alerts.push('calories brûlées');
+  if(!(num(d.h?.steps)>0))alerts.push('pas');
   status.textContent=alerts.length?`À vérifier : ${alerts.join(' • ')}`:'Essentiel complété ✅ • prêt à copier';
   const energy=beastReportNumber(d.h?.beastSleep?.energy);
   preview.textContent=`${k}/${kt} kcal • ${p}/${pt} g protéines • ${formatWater(water)}/3,00 L${sleep>0?` • 😴 ${formatSleepMinutes(sleep)}`:''}${energy!==null&&energy>=1&&energy<=5?` • Énergie ${energy}/5`:''}`;
   if(check){
     const box=(label,value,ok)=>`<div style="background:#0d100e;border:1px solid #29302b;border-radius:11px;padding:9px"><div class="muted" style="font-size:9px">${label}</div><b style="font-size:12px">${value}${ok?' ✅':''}</b></div>`;
-    const jOk=hasJournalEntry(d.journal);check.innerHTML=box('Calories',`${k} / ${kt}`,d.t.n>0)+box('Protéines',`${p} / ${pt} g`,p>=pt)+box('Eau',`${formatWater(water)} / 3,00 L`,water>=3)+box('Journal',jOk?(d.journal.tags?.length?`${d.journal.tags.length} tag(s) / note`:'Rempli'):'À écrire',jOk);
+    const jOk=hasJournalEntry(d.journal);check.innerHTML=box('Calories',`${k} / ${kt}`,d.t.n>0)+box('Protéines',`${p} / ${pt} g`,p>=pt)+box('Eau',`${formatWater(water)} / 3,00 L`,water>=3)+box('Journal',jOk?(d.journal.tags?.length?`${d.journal.tags.length} tag(s) / note`:'Rempli'):'À écrire',jOk)+box('🌙 Sommeil',sleep>0?formatSleepMinutes(sleep):'À saisir',sleep>0)+box('❤️ Santé',num(d.h?.totalKcal)>0||num(d.h?.activeKcal)>0?(num(d.h?.steps)>0?'Calories + pas':'Pas à saisir'):'Calories à saisir',(num(d.h?.totalKcal)>0||num(d.h?.activeKcal)>0)&&num(d.h?.steps)>0);
   }
 }
 async function closeDayAndCopy(){
@@ -8130,7 +8180,7 @@ function beastBackupObject(){
   for(let i=0;i<localStorage.length;i++){
     const k=localStorage.key(i);if(k&&k.startsWith('beast_'))data[k]=localStorage.getItem(k);
   }
-  return {app:'BEAST TRACK',version:'V9.36',exportedAt:new Date().toISOString(),data};
+  return {app:'BEAST TRACK',version:'V9.37',exportedAt:new Date().toISOString(),data};
 }
 function exportBeastBackup(){
   try{
@@ -8159,7 +8209,7 @@ function beastValidateBackup(obj){
   return keys;
 }
 function beastEmergencyExport(snapshot){
-  const content=JSON.stringify({app:'BEAST TRACK',version:'V9.36 AVANT RESTAURATION',exportedAt:new Date().toISOString(),data:snapshot},null,2);
+  const content=JSON.stringify({app:'BEAST TRACK',version:'V9.37 AVANT RESTAURATION',exportedAt:new Date().toISOString(),data:snapshot},null,2);
   const url=URL.createObjectURL(new Blob([content],{type:'application/json'}));
   const a=document.createElement('a');a.href=url;a.download=`BEAST_SECURITE_AVANT_RESTAURATION_${today()}.json`;
   document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),10000);
