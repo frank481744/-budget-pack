@@ -1,6 +1,6 @@
 (() => {
 "use strict";
-const BUDGET_PACK_BUILD="2026-11-01-CALENDAR-V6-PUSH-LINK";
+const BUDGET_PACK_BUILD="2026-11-03-CALENDAR-V7-RDV-A-CONFIRMER";
 // BUDGET PACK FIX DOUBLONS V2 — 2026-09-27
 const LS_KEY="budgetPackStateV1", PROFILE_KEY="budgetPackProfileV1", THEME_KEY="budgetPackThemeV1";
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
@@ -1582,6 +1582,8 @@ function ensureCalendarFirstStyles(){
     .cf-section{background:var(--card);border:1px solid var(--line);border-radius:22px;padding:14px;box-shadow:var(--shadow)}
     .cf-sectionhead{display:flex;justify-content:space-between;align-items:center;margin-bottom:9px}
     .cf-sectionhead strong{font-size:15px}.cf-sectionhead button{border:0;background:transparent;color:var(--accent);font-weight:900}
+    .cf-confirm{border-color:rgba(255,184,77,.55);box-shadow:0 12px 30px rgba(255,184,77,.08)}
+    .cf-confirm-help{font-size:11px;color:var(--muted);line-height:1.4;margin:-1px 0 6px;padding:0 2px 8px;border-bottom:1px solid var(--line)}
     .cf-empty{padding:18px 10px;text-align:center;color:var(--muted);font-size:12px}
     .cf-row{display:flex;align-items:center;gap:9px;padding:11px 2px;border-top:1px solid var(--line)}
     .cf-row:first-child{border-top:0}.cf-row.is-done{opacity:.58}
@@ -1645,8 +1647,12 @@ function renderCalendarFirstHome(){
   const host=document.getElementById("cfHome");if(!host)return;
   const now=today(), todayItems=calItems(now,now), openToday=todayItems.filter(x=>!calIsDone(x));
   const up=calUpcoming(7), weekItems=up.filter(x=>x.due!==now).slice(0,8);
+  // Un RDV passé mais non coché reste visible ici jusqu'à ce qu'il soit confirmé.
+  const confirmRdv=calItems(CALENDAR_FRESH_START,addDays(now,-1))
+    .filter(x=>x.calKind==="appointment"&&!calIsDone(x));
   const todayHtml=openToday.length?openToday.map(x=>calRow(x)).join(""):`<div class="cf-empty">✨ Rien à faire aujourd’hui. Les éléments terminés restent visibles dans le calendrier.</div>`;
   const weekHtml=weekItems.length?weekItems.map(x=>calRow(x,{showDate:true})).join(""):`<div class="cf-empty">Rien d’autre dans les 7 prochains jours.</div>`;
+  const confirmHtml=confirmRdv.length?`<div class="cf-section cf-confirm"><div class="cf-sectionhead"><strong>⚠️ À confirmer</strong><span class="badge orange">${confirmRdv.length}</span></div><div class="cf-confirm-help">Ces rendez-vous sont passés mais n’ont pas encore été cochés. Fais ✅ Fait ou ✏️ Modifier — ils resteront ici jusque-là.</div>${confirmRdv.map(x=>calRow(x,{showDate:true})).join("")}</div>`:"";
   host.innerHTML=`
     <div class="cf-hero">
       <div class="cf-kicker">Aujourd’hui</div>
@@ -1660,9 +1666,10 @@ function renderCalendarFirstHome(){
     </div>
     <div class="cf-stats">
       <div class="cf-stat"><span>Aujourd’hui</span><strong>${openToday.length}</strong></div>
-      <div class="cf-stat"><span>RDV · 7 jours</span><strong>${calAppointmentCount(7)}</strong></div>
+      <div class="cf-stat"><span>À confirmer</span><strong>${confirmRdv.length}</strong></div>
       <div class="cf-stat"><span>À payer · 7 jours</span><strong>${money(calPaymentTotal(7))}</strong></div>
     </div>
+    ${confirmHtml}
     <div class="cf-section"><div class="cf-sectionhead"><strong>📍 Aujourd’hui</strong><button onclick="BP.goCal()">Calendrier →</button></div>${todayHtml}</div>
     <div class="cf-section"><div class="cf-sectionhead"><strong>🗓️ Les 7 prochains jours</strong><button onclick="BP.goCal()">Voir tout →</button></div>${weekHtml}</div>`;
 }
