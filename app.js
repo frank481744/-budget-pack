@@ -1,1946 +1,389 @@
 (() => {
 "use strict";
-const BUDGET_PACK_BUILD="2026-11-03-CALENDAR-V7-RDV-A-CONFIRMER";
-// BUDGET PACK FIX DOUBLONS V2 — 2026-09-27
-const LS_KEY="budgetPackStateV1", PROFILE_KEY="budgetPackProfileV1", THEME_KEY="budgetPackThemeV1";
-const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
-const pad=n=>String(n).padStart(2,"0");
-const isoDate=d=>`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
-const today=()=>isoDate(new Date());
-const uid=(p="id")=>`${p}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2,9)}`;
-const money=n=>new Intl.NumberFormat("fr-CA",{style:"currency",currency:"CAD",maximumFractionDigits:2}).format(Number(n||0));
-const fmtDate=s=>new Date(`${s}T12:00:00`).toLocaleDateString("fr-CA",{weekday:"short",day:"numeric",month:"short"});
-const monthKey=s=>String(s).slice(0,7);
-const parseLocal=s=>new Date(`${s}T12:00:00`);
-const addDays=(s,n)=>{const d=parseLocal(s);d.setDate(d.getDate()+n);return isoDate(d)};
-const daysBetween=(a,b)=>Math.round((parseLocal(b)-parseLocal(a))/86400000);
-const deepClone=o=>JSON.parse(JSON.stringify(o));
+
+const BUILD="2026-11-12-NOUBLIE-RIEN-V1";
+const LS_KEY="budgetPackStateV1";
+const PROFILE_KEY="budgetPackProfileV1";
+const HUB_KEY="familyHubV1";
+const DEFAULT_ONESIGNAL_APP_ID="4770a678-6329-4944-9d54-b01d0b14fc97";
+const $=s=>document.querySelector(s);
+const $$=s=>[...document.querySelectorAll(s)];
 const nowIso=()=>new Date().toISOString();
+const uid=(p="id")=>`${p}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2,9)}`;
+const esc=s=>String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m]));
+const normalize=s=>String(s??"").trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"");
 
-const merchants=["Tim Hortons","Dépanneur","Épicerie","McDo / resto","Pharmacie","Amazon","Maison / réno","Enfants","Vêtements","Loisirs","Cadeaux","Auto","Animaux","Autre"];
-const categories=["Épicerie","Resto / café","Dépanneur","Maison / réno","Enfants","Pharmacie","Vêtements","Loisirs","Cadeaux","Auto","Animaux","Facture","Autre"];
-
-function seedBills(){
-  const mk=(name,amount,dueDay,category="Facture",variable=false)=>({id:uid("bill"),name,amount,dueDay,category,frequency:"monthly",variable,autopay:false,active:true,statuses:{},createdAt:nowIso(),updatedAt:nowIso()});
-  return [
-    mk("Assurances",615,1), mk("Hydro",445,20,"Facture",true), mk("Netflix",20,20),
-    mk("Visa",300,20,"Facture",true), mk("Fairstone",672,21), mk("Prêt 1",225,21),
-    mk("Vidéotron",160,22), mk("Cogeco",80,24), mk("Hypothèque",1054,30),
-    mk("Taxes municipales",200,15)
-  ];
-}
-function defaultState(){
-  return {
-    settings:{familyName:"Budget familial",startBalance:0,startBalanceDate:today(),trackingStartDate:today(),overdraftLimit:1000,groceryBudget:300,categoryBudgets:{},historyMonths:"12",reminderHour:9,sundayReminder:true,dayBeforeReminder:true,lateReminder:true,timezone:"America/Toronto",updatedAt:nowIso()},
-    bills:seedBills(),
-    transactions:[],
-    incomeSchedules:[
-      {id:uid("inc"),name:"Ma paie",frequency:"weekly",weekday:4,amount:null,active:true,updatedAt:nowIso()},
-      {id:uid("inc"),name:"Paie conjointe",frequency:"monthly",dueDay:1,amount:1534,active:true,updatedAt:nowIso()},
-      {id:uid("inc"),name:"Paie conjointe",frequency:"monthly",dueDay:20,amount:3600,active:true,updatedAt:nowIso()}
-    ],
-    goals:[],
-    monthlyPlans:{},
-    archives:{},
-    updatedAt:nowIso()
-  };
-}
-let state=loadState(), summaryCursor=new Date(), calendarDays=14, historyFilter="all", cloudBusy=false, cloudTimer=null, oneSignalReady=false;
+let page="list";
+let taskFilter="all";
+let jobFilter="active";
+let cloudBusy=false;
+let cloudTimer=null;
+let pullTimer=null;
+let oneSignalInitialized=false;
+let members=[];
+let state=loadState();
 let profile=loadProfile();
+ensureHub();
 
-function loadState(){try{return JSON.parse(localStorage.getItem(LS_KEY))||defaultState()}catch{return defaultState()}}
-function loadProfile(){try{return JSON.parse(localStorage.getItem(PROFILE_KEY))||{apiUrl:"",token:"",memberId:"",memberName:"",familyId:"",joinCode:"",cloudVersion:0,oneSignalAppId:""}}catch{return {apiUrl:"",token:"",memberId:"",memberName:"",familyId:"",joinCode:"",cloudVersion:0,oneSignalAppId:""}}}
+function loadState(){
+  try{return JSON.parse(localStorage.getItem(LS_KEY))||{}}catch{return {}}
+}
+function loadProfile(){
+  const blank={apiUrl:"",token:"",memberId:"",memberName:"",familyId:"",joinCode:"",cloudVersion:0,oneSignalAppId:DEFAULT_ONESIGNAL_APP_ID};
+  try{return {...blank,...(JSON.parse(localStorage.getItem(PROFILE_KEY))||{})}}catch{return blank}
+}
 function saveProfile(){localStorage.setItem(PROFILE_KEY,JSON.stringify(profile))}
-function saveState(skipCloud=false){
-  state.updatedAt=nowIso(); localStorage.setItem(LS_KEY,JSON.stringify(state)); render();
-  if(!skipCloud && profile.token && profile.apiUrl){clearTimeout(cloudTimer);cloudTimer=setTimeout(pushCloud,650)}
+function defaultHub(){return {version:1,tasks:[],jobs:[],createdAt:nowIso(),updatedAt:nowIso()}}
+function ensureHub(){
+  if(!state||typeof state!=="object")state={};
+  if(!state[HUB_KEY]||typeof state[HUB_KEY]!=="object")state[HUB_KEY]=defaultHub();
+  const h=state[HUB_KEY];
+  if(!Array.isArray(h.tasks))h.tasks=[];
+  if(!Array.isArray(h.jobs))h.jobs=[];
+  if(!h.version)h.version=1;
 }
-function touchSettings(){state.settings.updatedAt=nowIso()}
-function toast(msg){const t=$("#toast");t.textContent=msg;t.classList.remove("hidden");clearTimeout(toast._t);toast._t=setTimeout(()=>t.classList.add("hidden"),2200)}
-function esc(s){return String(s??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m]))}
-
-function applyTheme(name,custom){
-  const r=document.documentElement, themes={
-    beast:["#090b0a","#151816","#1d211e","#f7f8f7","#aab2ac","#7CFF00","#081000"],
-    rose:["#130d11","#21141d","#2b1a27","#fff6fb","#ceb6c6","#ff74b7","#250011"],
-    violet:["#100d17","#1b1626","#241d33","#fbf8ff","#bfb6cf","#b18cff","#120625"],
-    blue:["#091118","#101d26","#172935","#f5fbff","#aac0cf","#52b7ff","#00131f"],
-    light:["#f4f5f4","#ffffff","#edf0ed","#151915","#667066","#47a800","#ffffff"],
-    dark:["#080808","#141414","#202020","#fafafa","#b5b5b5","#eeeeee","#111111"]
-  };
-  let vals=themes[name]||themes.beast;if(name==="custom"&&custom){vals=[...themes.beast];vals[5]=custom}
-  ["--bg","--card","--card2","--text","--muted","--accent","--accentText"].forEach((k,i)=>r.style.setProperty(k,vals[i]));
-  document.querySelector('meta[name="theme-color"]').setAttribute("content",vals[0]);
-  localStorage.setItem(THEME_KEY,JSON.stringify({name,custom}));
+function hub(){ensureHub();return state[HUB_KEY]}
+function saveLocal(){hub().updatedAt=nowIso();state.updatedAt=nowIso();localStorage.setItem(LS_KEY,JSON.stringify(state))}
+function saveState({skipCloud=false}={}){
+  saveLocal();render();
+  if(!skipCloud&&profile.token&&profile.apiUrl){clearTimeout(cloudTimer);cloudTimer=setTimeout(()=>pushCloud(),500)}
 }
-function initTheme(){try{const t=JSON.parse(localStorage.getItem(THEME_KEY));if(t)applyTheme(t.name,t.custom)}catch{}}
-
-function lastDay(y,m){return new Date(y,m,0).getDate()}
-function monthlyDate(year,month1,day){return `${year}-${pad(month1)}-${pad(Math.min(day,lastDay(year,month1)))}`}
-function billOccurrences(bill,from,to){
-  if(bill.deletedAt) return [];
-  if(!bill.active && !bill.endedAt) return [];
-  let out=[];
-  if(bill.frequency==="one"){
-    if(bill.dueDate>=from&&bill.dueDate<=to) out=[bill.dueDate];
-  } else if(bill.frequency==="weekly"){
-    let d=bill.startDate||from;
-    while(d<from)d=addDays(d,7);
-    while(d<=to){out.push(d);d=addDays(d,7)}
-  } else {
-    let d=parseLocal(from), end=parseLocal(to);
-    d.setDate(1);
-    while(d<=end){
-      const s=monthlyDate(d.getFullYear(),d.getMonth()+1,bill.dueDay||1);
-      if(s>=from&&s<=to)out.push(s);
-      d.setMonth(d.getMonth()+1);
-    }
-  }
-  const activeFrom=bill.activeFrom||state.settings.trackingStartDate||state.settings.startBalanceDate||today();
-  out=out.filter(x=>x>=activeFrom);
-  if(bill.endedAt) out=out.filter(x=>x<=bill.endedAt);
-  return out;
+function toast(msg){const t=$("#toast");if(!t)return;t.textContent=msg;t.classList.remove("hidden");clearTimeout(toast._t);toast._t=setTimeout(()=>t.classList.add("hidden"),2200)}
+function fmtDateTime(v){if(!v)return"";const d=new Date(v);if(Number.isNaN(d.getTime()))return"";return d.toLocaleString("fr-CA",{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"})}
+function myName(){return profile.memberName||members.find(x=>x.id===profile.memberId)?.name||"Moi"}
+function initials(name){return String(name||"?").trim().split(/\s+/).slice(0,2).map(x=>x[0]).join("").toUpperCase()||"?"}
+function categoryInfo(type){
+  const map={todo:["✅","À faire"],buy:["🛒","À acheter"],call:["📞","À appeler"],wait:["⏳","En attente"]};
+  return map[type]||map.todo;
 }
-function incomeOccurrences(sched,from,to){
-  if(!sched.active||sched.deletedAt)return [];
-  let out=[];
-  if(sched.frequency==="one"){
-    if(!sched.receivedAt&&sched.dueDate>=from&&sched.dueDate<=to)out=[sched.dueDate];
-  }else if(sched.frequency==="monthly"){
-    let d=parseLocal(from),end=parseLocal(to);d.setDate(1);
-    while(d<=end){const s=monthlyDate(d.getFullYear(),d.getMonth()+1,sched.dueDay||1);if(s>=from&&s<=to)out.push(s);d.setMonth(d.getMonth()+1)}
-  }else if(sched.frequency==="weekly"){
-    let d=parseLocal(from),target=sched.weekday??4;
-    while(d.getDay()!==target)d.setDate(d.getDate()+1);
-    while(isoDate(d)<=to){out.push(isoDate(d));d.setDate(d.getDate()+7)}
-  }
-  out=out.filter(date=>!(sched.coveredDates||{})[date]);
-  return out;
+function assigneeLabel(t){
+  if(!t.assigneeId||t.assigneeId==="all")return"Nous deux";
+  return t.assigneeName||members.find(m=>m.id===t.assigneeId)?.name||"Assigné";
 }
-function billStatus(bill,due){return (bill.statuses||{})[due]||{}}
-function setBillStatus(bill,due,patch){
-  bill.statuses=bill.statuses||{};bill.statuses[due]={...bill.statuses[due],...patch,updatedAt:nowIso()};bill.updatedAt=nowIso();saveState()
-}
-function dueItems(from=addDays(today(),-30),to=addDays(today(),31)){
-  const arr=[];
-  state.bills.forEach(b=>billOccurrences(b,from,to).forEach(due=>{
-    const status=billStatus(b,due);
-    if(status.coveredByMonthlyPlan)return;
-    arr.push({kind:"bill",bill:b,due,status});
-  }));
-  return arr.sort((a,b)=>a.due.localeCompare(b.due));
-}
-function nextPayDate(){
-  const from=today(),to=addDays(from,60), dates=[];
-  state.incomeSchedules.forEach(s=>incomeOccurrences(s,from,to).forEach(d=>dates.push({date:d,s})));
-  dates.sort((a,b)=>a.date.localeCompare(b.date)); return dates[0]||null;
-}
-function currentBalance(){
-  const start=state.settings.startBalanceDate||"1900-01-01";
-  let v=Number(state.settings.startBalance||0);
-  state.transactions.forEach(t=>{
-    if(t.date<start)return;
-    if(t.kind==="income")v+=Number(t.amount||0);
-    if(t.kind==="expense")v-=Number(t.amount||0);
-  });
-  state.bills.forEach(b=>Object.entries(b.statuses||{}).forEach(([due,st])=>{
-    const paidDate=(st.paidAt||"").slice(0,10);
-    if(st.paidAt && paidDate>=start)v-=Number(st.paidAmount??b.amount??0);
-  }));
-  return v;
-}
-function overMonth(key=monthKey(today())){return state.transactions.filter(t=>t.kind==="over"&&monthKey(t.date)===key).reduce((s,t)=>s+Number(t.amount||0),0)}
-function expensesWeek(){
-  const d=new Date();const day=(d.getDay()+6)%7;const start=isoDate(new Date(d.getFullYear(),d.getMonth(),d.getDate()-day));const end=addDays(start,6);
-  const out=state.transactions.filter(t=>t.kind==="expense"&&t.date>=start&&t.date<=end).map(t=>({...t}));
-  state.bills.forEach(b=>{
-    if(!b.importedMonthlyPlan)return;
-    Object.entries(b.statuses||{}).forEach(([due,st])=>{
-      const pd=(st.paidAt||"").slice(0,10);
-      if(pd>=start&&pd<=end)out.push({kind:"expense",date:pd,amount:Number(st.paidAmount??b.amount??0),category:b.category||"Autre",merchant:b.name});
-    });
-  });
-  return out;
-}
-function nextPayGroup(){
-  const from=today(),to=addDays(from,60),events=[];
-  state.incomeSchedules.forEach(s=>incomeOccurrences(s,from,to).forEach(date=>events.push({date,s})));
-  events.sort((a,b)=>a.date.localeCompare(b.date));
-  if(!events.length)return null;
-  const date=events[0].date, same=events.filter(x=>x.date===date);
-  const known=same.filter(x=>x.s.amount!=null);
-  const amount=known.reduce((sum,x)=>sum+Number(x.s.amount||0),0);
-  return {date,events:same,amount,hasUnknown:known.length!==same.length};
-}
-function nextPayProjection(){
-  const bal=Number(currentBalance());
-  const group=nextPayGroup();
-  if(!group){
-    const end=addDays(today(),14);
-    const beforeBills=dueItems(today(),end).filter(x=>!x.status.paidAt);
-    const dueBefore=beforeBills.reduce((sum,x)=>sum+Number(x.bill.amount||0),0);
-    return {bal,payDate:null,dueBefore,before:bal-dueBefore,payAmount:null,hasUnknown:true,sameDayDue:0,after:null,count:0};
-  }
-  const beforeEnd=addDays(group.date,-1);
-  const beforeBills=beforeEnd>=today()?dueItems(today(),beforeEnd).filter(x=>!x.status.paidAt):[];
-  const sameDayBills=dueItems(group.date,group.date).filter(x=>!x.status.paidAt);
-  const dueBefore=beforeBills.reduce((sum,x)=>sum+Number(x.bill.amount||0),0);
-  const sameDayDue=sameDayBills.reduce((sum,x)=>sum+Number(x.bill.amount||0),0);
-  const before=Number((bal-dueBefore).toFixed(2));
-  const after=group.hasUnknown?null:Number((before+group.amount-sameDayDue).toFixed(2));
-  return {bal,payDate:group.date,dueBefore,before,payAmount:group.amount,hasUnknown:group.hasUnknown,sameDayDue,after,count:group.events.length};
-}
-function availableToPay(){return nextPayProjection().before}
+function isMine(t){return !t.assigneeId||t.assigneeId==="all"||t.assigneeId===profile.memberId}
+function activeTasks(){return hub().tasks.filter(t=>t&&!t.deletedAt&&!t.doneAt)}
+function doneTasks(){return hub().tasks.filter(t=>t&&!t.deletedAt&&t.doneAt).sort((a,b)=>String(b.doneAt).localeCompare(String(a.doneAt)))}
+function activeJobs(){return hub().jobs.filter(j=>j&&!j.deletedAt&&!j.archivedAt)}
+function archivedJobs(){return hub().jobs.filter(j=>j&&!j.deletedAt&&j.archivedAt).sort((a,b)=>String(b.archivedAt).localeCompare(String(a.archivedAt)))}
+function sortedTasks(list){return [...list].sort((a,b)=>Number(b.priority==="hot")-Number(a.priority==="hot")||String(b.updatedAt||b.createdAt||"").localeCompare(String(a.updatedAt||a.createdAt||"")))}
 
 function render(){
-  renderHome();renderGoals();renderCalendar();renderHistory();renderSummary();renderSettings();renderQuickMerchants();updateSyncLine();ensureNegativeBalanceButton();ensureNightBalanceHomeButton();ensureBudgetImportHomeButton();ensureMonthlyPlanHomeButton();renderCalendarFirst();
+  const app=$("#app");if(!app)return;
+  app.innerHTML=`
+    <header class="topbar">
+      <div><div class="brand">N’OUBLIE <span>RIEN</span></div><div class="subbrand">Liste familiale · WIZZ · Jobs</div><div id="syncLine" class="sync"></div></div>
+      <div class="avatar">${esc(initials(myName()))}</div>
+    </header>
+    <main>
+      <section id="page-list" class="page ${page==="list"?"active":""}">${renderListPage()}</section>
+      <section id="page-jobs" class="page ${page==="jobs"?"active":""}">${renderJobsPage()}</section>
+      <section id="page-done" class="page ${page==="done"?"active":""}">${renderDonePage()}</section>
+      <section id="page-settings" class="page ${page==="settings"?"active":""}">${renderSettingsPage()}</section>
+    </main>
+    ${page!=="settings"?`<button class="fab" id="fabAdd" aria-label="Ajouter">＋</button>`:""}
+    <nav class="bottomNav">
+      ${navBtn("list","☑","Liste")}${navBtn("jobs","🧰","Jobs")}${navBtn("done","✓","Fait")}${navBtn("settings","⚙","Réglages")}
+    </nav>`;
+  bindMainEvents();updateSyncLine();
+}
+function navBtn(id,icon,label){return `<button class="navBtn ${page===id?"active":""}" data-page="${id}"><b>${icon}</b><span>${label}</span></button>`}
+
+function renderListPage(){
+  const all=activeTasks();
+  const mine=all.filter(isMine);
+  const hot=all.filter(t=>t.priority==="hot");
+  let list=sortedTasks(all);
+  if(taskFilter!=="all")list=list.filter(t=>t.type===taskFilter);
+  const rows=list.length?list.map(taskRow).join(""):`<div class="empty">✨ Rien ici. Ajoute une affaire ou colle un code ChatGPT.</div>`;
+  return `
+    <div class="hero">
+      <div class="heroTitle">Qu’est-ce qu’on<br>ne doit pas oublier?</div>
+      <div class="heroSub">Tout reste ici jusqu’à ce que quelqu’un le coche ✅.</div>
+      <div class="heroButtons">
+        <button class="btn primary" id="quickTask">＋ Ajouter</button>
+        <button class="btn" id="quickImport">⚡ Code</button>
+        <button class="btn wide" id="quickWizz">⚡ WIZZ l’autre</button>
+      </div>
+    </div>
+    <div class="stats">
+      <div class="stat"><span>Ouvert</span><strong>${all.length}</strong></div>
+      <div class="stat"><span>Pour moi/nous</span><strong>${mine.length}</strong></div>
+      <div class="stat"><span>🔥 Priorité</span><strong>${hot.length}</strong></div>
+    </div>
+    <div class="section">
+      <div class="sectionHead"><strong>Liste partagée</strong><button id="addTaskTop">＋ Ajouter</button></div>
+      <div class="chips">
+        ${chip("all","Tout")}${chip("todo","✅ À faire")}${chip("buy","🛒 Acheter")}${chip("call","📞 Appeler")}${chip("wait","⏳ Attente")}
+      </div>
+      ${rows}
+    </div>`;
+}
+function chip(id,label){return `<button class="chip ${taskFilter===id?"active":""}" data-filter="${id}">${label}</button>`}
+function taskRow(t,{done=false}={}){
+  const [icon,label]=categoryInfo(t.type);
+  const hot=t.priority==="hot"?`<span class="badge hot">🔥 Priorité</span>`:"";
+  const mine=t.assigneeId===profile.memberId?`<span class="badge mine">👤 Moi</span>`:`<span class="badge">👥 ${esc(assigneeLabel(t))}</span>`;
+  const doneMeta=done?` · Fait ${esc(fmtDateTime(t.doneAt))}${t.doneByName?` par ${esc(t.doneByName)}`:""}`:"";
+  return `<div class="task ${done?"taskDone":""}">
+    <div class="taskIcon">${icon}</div>
+    <div class="taskMain">
+      <div class="taskTitle">${esc(t.title)}</div>
+      <div class="taskMeta">${esc(label)}${doneMeta}</div>
+      <div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:6px">${hot}${mine}</div>
+      ${t.note?`<div class="taskNote">${esc(t.note)}</div>`:""}
+    </div>
+    <div class="actions">
+      ${done?`<button class="iconBtn" data-task-undo="${t.id}" title="Remettre à faire">↩</button>`:`<button class="iconBtn wizz" data-task-wizz="${t.id}" title="WIZZ">⚡</button><button class="iconBtn done" data-task-done="${t.id}" title="Fait">✓</button>`}
+      <button class="iconBtn" data-task-edit="${t.id}" title="Modifier">✎</button>
+    </div>
+  </div>`;
 }
 
-// ----- Suivi du plan : solde réel vs repères « restant prévu » -----
-function planRemainingMarkers(){
-  const out=[];
-  Object.entries(state.monthlyPlans||{}).forEach(([month,plan])=>{
-    (plan?.items||[]).forEach((item,index)=>{
-      if(item?.kind!=="remaining"||!validImportDate(item.date))return;
-      const amount=Number(item.amount);if(!Number.isFinite(amount))return;
-      out.push({month,date:item.date,amount,label:item.label||"Restant prévu",line:Number(item.line||index),index});
-    });
+function renderJobsPage(){
+  const list=jobFilter==="archived"?archivedJobs():activeJobs();
+  const cards=list.length?list.map(jobCard).join(""):`<div class="empty">🧰 Aucune job ${jobFilter==="archived"?"archivée":"active"}.</div>`;
+  return `
+    <div class="hero">
+      <div class="heroTitle">🧰 Jobs & matériel</div>
+      <div class="heroSub">Prépare tes listes d’avance. <b>Aucun rappel automatique</b> pour les jobs.</div>
+      <div class="heroButtons">
+        <button class="btn primary" id="newJob">＋ Nouvelle job</button>
+        <button class="btn" id="jobImport">⚡ Code JOB</button>
+        <button class="btn wide" id="jobWizzAll">⚡ WIZZ l’autre</button>
+      </div>
+    </div>
+    <div class="section">
+      <div class="chips"><button class="chip ${jobFilter==="active"?"active":""}" data-jobfilter="active">🧰 Actives</button><button class="chip ${jobFilter==="archived"?"active":""}" data-jobfilter="archived">📦 Archivées</button></div>
+      ${cards}
+    </div>`;
+}
+function jobCard(j){
+  const items=Array.isArray(j.items)?j.items:[];const done=items.filter(x=>x.done).length;const pct=items.length?Math.round(done/items.length*100):0;
+  const rows=items.length?items.map(it=>`<label class="jobItem ${it.done?"done":""}"><input type="checkbox" data-job-item="${j.id}" data-item-id="${it.id}" ${it.done?"checked":""}><span>${esc(it.label)}</span></label>`).join(""):`<div class="empty">Aucun matériel dans cette job.</div>`;
+  return `<div class="job">
+    <div class="jobTop"><div style="flex:1"><div class="jobTitle">${esc(j.title)}</div><div class="jobMeta">${done}/${items.length} prêt${j.createdByName?` · créé par ${esc(j.createdByName)}`:""}</div>${j.note?`<div class="taskNote">${esc(j.note)}</div>`:""}</div><span class="badge">${pct}%</span></div>
+    <div class="progress"><i style="width:${pct}%"></i></div>
+    <div class="jobItems">${rows}</div>
+    <div class="jobFoot">
+      <button class="btn small" data-job-additem="${j.id}">＋ Item</button>
+      <button class="btn small" data-job-edit="${j.id}">✎ Modifier</button>
+      <button class="btn small" data-job-wizz="${j.id}">⚡ WIZZ</button>
+      ${j.archivedAt?`<button class="btn small" data-job-restore="${j.id}">↩ Réactiver</button>`:`<button class="btn small" data-job-archive="${j.id}">📦 Archiver</button>`}
+    </div>
+  </div>`;
+}
+
+function renderDonePage(){
+  const t=doneTasks();const j=archivedJobs();
+  return `<div class="hero"><div class="heroTitle">✅ Fait</div><div class="heroSub">Les choses terminées restent accessibles, mais ne te gossent plus.</div></div>
+    <div class="section"><div class="sectionHead"><strong>Tâches terminées</strong><span class="tiny">${t.length}</span></div>${t.length?t.slice(0,100).map(x=>taskRow(x,{done:true})).join(""):`<div class="empty">Aucune tâche terminée.</div>`}</div>
+    <div class="section"><div class="sectionHead"><strong>Jobs archivées</strong><button data-gojobsarchive="1">Voir dans Jobs →</button></div>${j.length?j.slice(0,5).map(x=>`<div class="task"><div class="taskIcon">📦</div><div class="taskMain"><div class="taskTitle">${esc(x.title)}</div><div class="taskMeta">Archivée ${esc(fmtDateTime(x.archivedAt))}</div></div></div>`).join(""):`<div class="empty">Aucune job archivée.</div>`}</div>`;
+}
+
+function renderSettingsPage(){
+  const connected=!!(profile.token&&profile.apiUrl);const memberRows=members.length?members.map(m=>`<div class="memberRow"><span>${esc(m.name)}</span><span class="badge ${m.id===profile.memberId?"mine":""}">${m.id===profile.memberId?"Ce téléphone":esc(m.role||"membre")}</span></div>`).join(""):`<div class="tiny">Les membres apparaîtront après synchronisation.</div>`;
+  return `<div class="hero"><div class="heroTitle">⚙ Réglages</div><div class="heroSub">Partage, WIZZ et notifications.</div></div>
+    <div class="settingsCard"><h3>👥 Famille partagée</h3>
+      <div class="tiny">Statut : ${connected?"connecté au partage":"mode local"}</div>
+      <label>Adresse API<input id="apiUrl" value="${esc(profile.apiUrl||"")}" placeholder="https://...workers.dev"></label>
+      <label>Ton nom<input id="memberName" value="${esc(profile.memberName||"")}" placeholder="Francis"></label>
+      ${connected?`<div class="two"><button class="btn" id="pullNow">🔄 Synchroniser</button><button class="btn danger" id="disconnect">Déconnecter</button></div><label>Code famille<input value="${esc(profile.joinCode||"")}" readonly></label>`:
+      `<div class="two"><button class="btn primary" id="createFamily">Créer le partage</button><button class="btn" id="joinFamily">Rejoindre</button></div><label>Code pour rejoindre<input id="joinCode" maxlength="8" placeholder="ABC123"></label>`}
+      <div style="margin-top:10px">${memberRows}</div>
+    </div>
+    <div class="settingsCard"><h3>⚡ WIZZ & notifications</h3>
+      <label>OneSignal App ID<input id="oneSignalId" value="${esc(profile.oneSignalAppId||DEFAULT_ONESIGNAL_APP_ID)}"></label>
+      <button class="btn primary full" id="enablePush">🔔 Activer / relier ce téléphone</button>
+      <div class="two" style="margin-top:8px"><button class="btn" id="testLocal">🔔 Tester ce téléphone</button><button class="btn" id="testServerWizz">⚡ Tester WIZZ vers l’autre</button></div>
+      <div class="tiny" style="margin-top:8px">Le test WIZZ passe vraiment par le serveur et OneSignal.</div>
+    </div>
+    <div class="settingsCard"><h3>💾 Données</h3>
+      <div class="two"><button class="btn" id="exportHub">📤 Exporter</button><button class="btn" id="importHub">📥 Importer</button></div><input id="importFile" type="file" accept="application/json" class="hidden">
+      <button class="btn danger full" style="margin-top:8px" id="resetHub">🧹 Vider seulement N’OUBLIE RIEN</button>
+      <div class="tiny" style="margin-top:8px">Les anciennes données Budget Pack restent conservées dans le stockage, mais cette nouvelle app ne les affiche plus.</div>
+    </div>
+    <div class="tiny" style="text-align:center;margin:16px 0">${BUILD}</div>`;
+}
+
+function bindMainEvents(){
+  $$("[data-page]").forEach(b=>b.onclick=()=>{page=b.dataset.page;render()});
+  $("#fabAdd")?.addEventListener("click",()=>page==="jobs"?openJobForm():openTaskForm());
+  $("#quickTask")?.addEventListener("click",()=>openTaskForm());
+  $("#addTaskTop")?.addEventListener("click",()=>openTaskForm());
+  $("#quickImport")?.addEventListener("click",openImport);
+  $("#quickWizz")?.addEventListener("click",()=>openFreeWizz());
+  $$("[data-filter]").forEach(b=>b.onclick=()=>{taskFilter=b.dataset.filter;render()});
+  $$("[data-task-done]").forEach(b=>b.onclick=()=>completeTask(b.dataset.taskDone));
+  $$("[data-task-undo]").forEach(b=>b.onclick=()=>undoTask(b.dataset.taskUndo));
+  $$("[data-task-edit]").forEach(b=>b.onclick=()=>openTaskForm(b.dataset.taskEdit));
+  $$("[data-task-wizz]").forEach(b=>b.onclick=()=>wizzTask(b.dataset.taskWizz));
+
+  $("#newJob")?.addEventListener("click",()=>openJobForm());
+  $("#jobImport")?.addEventListener("click",openImport);
+  $("#jobWizzAll")?.addEventListener("click",()=>openFreeWizz("🧰 Petit rappel pour une job"));
+  $$("[data-jobfilter]").forEach(b=>b.onclick=()=>{jobFilter=b.dataset.jobfilter;render()});
+  $$("[data-job-item]").forEach(ch=>ch.onchange=()=>toggleJobItem(ch.dataset.jobItem,ch.dataset.itemId,ch.checked));
+  $$("[data-job-additem]").forEach(b=>b.onclick=()=>addJobItemPrompt(b.dataset.jobAdditem));
+  $$("[data-job-edit]").forEach(b=>b.onclick=()=>openJobForm(b.dataset.jobEdit));
+  $$("[data-job-wizz]").forEach(b=>b.onclick=()=>wizzJob(b.dataset.jobWizz));
+  $$("[data-job-archive]").forEach(b=>b.onclick=()=>archiveJob(b.dataset.jobArchive));
+  $$("[data-job-restore]").forEach(b=>b.onclick=()=>restoreJob(b.dataset.jobRestore));
+  $("[data-gojobsarchive]")?.addEventListener("click",()=>{page="jobs";jobFilter="archived";render()});
+
+  bindSettings();
+}
+
+function openModal(html){const b=$("#modalBackdrop"),m=$("#modal");m.innerHTML=html;b.classList.remove("hidden");b.onclick=e=>{if(e.target===b)closeModal()};$("#modalClose")?.addEventListener("click",closeModal)}
+function closeModal(){$("#modalBackdrop")?.classList.add("hidden")}
+function modalHead(title){return `<div class="modalHead"><h2>${esc(title)}</h2><button class="close" id="modalClose">✕</button></div>`}
+function memberOptions(selected="all"){
+  const opts=[`<option value="all" ${selected==="all"?"selected":""}>Nous deux</option>`];
+  members.forEach(m=>opts.push(`<option value="${esc(m.id)}" ${selected===m.id?"selected":""}>${esc(m.name)}${m.id===profile.memberId?" (moi)":""}</option>`));
+  if(!members.length&&profile.memberId)opts.push(`<option value="${esc(profile.memberId)}" ${selected===profile.memberId?"selected":""}>${esc(myName())} (moi)</option>`);
+  return opts.join("");
+}
+function openTaskForm(id=""){
+  const t=id?hub().tasks.find(x=>x.id===id):null;
+  openModal(`${modalHead(t?"Modifier la tâche":"Nouvelle affaire")}
+    <form id="taskForm">
+      <label>Quoi?<input name="title" required maxlength="120" value="${esc(t?.title||"")}" placeholder="Ex. Appeler le dentiste"></label>
+      <div class="formGrid"><div><label>Type<select name="type"><option value="todo" ${t?.type==="todo"?"selected":""}>✅ À faire</option><option value="buy" ${t?.type==="buy"?"selected":""}>🛒 À acheter</option><option value="call" ${t?.type==="call"?"selected":""}>📞 À appeler</option><option value="wait" ${t?.type==="wait"?"selected":""}>⏳ En attente</option></select></label></div>
+      <div><label>Pour qui?<select name="assignee">${memberOptions(t?.assigneeId||"all")}</select></label></div></div>
+      <label>Priorité<select name="priority"><option value="normal" ${t?.priority!=="hot"?"selected":""}>Normale</option><option value="hot" ${t?.priority==="hot"?"selected":""}>🔥 Important</option></select></label>
+      <label>Note<textarea name="note" placeholder="Détail utile...">${esc(t?.note||"")}</textarea></label>
+      <div class="modalActions"><button type="button" class="btn" id="cancelTask">Annuler</button><button class="btn primary">${t?"Enregistrer":"Ajouter"}</button></div>
+      ${t?`<button type="button" class="btn danger full" id="deleteTask" style="margin-top:8px">🗑 Supprimer</button>`:""}
+    </form>`);
+  $("#cancelTask").onclick=closeModal;
+  $("#taskForm").onsubmit=e=>{e.preventDefault();const f=new FormData(e.target),assigneeId=String(f.get("assignee")||"all"),m=members.find(x=>x.id===assigneeId);const obj=t||{id:uid("task"),createdAt:nowIso(),createdById:profile.memberId||"",createdByName:myName()};Object.assign(obj,{title:String(f.get("title")||"").trim(),type:String(f.get("type")||"todo"),assigneeId,assigneeName:assigneeId==="all"?"Nous deux":m?.name||((assigneeId===profile.memberId)?myName():""),priority:String(f.get("priority")||"normal"),note:String(f.get("note")||"").trim(),updatedAt:nowIso()});if(!t)hub().tasks.push(obj);saveState();closeModal();toast(t?"Tâche modifiée ✅":"Ajouté à la liste ✅")};
+  $("#deleteTask")?.addEventListener("click",()=>{if(!confirm("Supprimer cette tâche?"))return;t.deletedAt=nowIso();t.updatedAt=nowIso();saveState();closeModal();toast("Tâche supprimée")});
+}
+function completeTask(id){const t=hub().tasks.find(x=>x.id===id);if(!t)return;t.doneAt=nowIso();t.doneById=profile.memberId||"";t.doneByName=myName();t.updatedAt=nowIso();saveState();toast("Fait ✅")}
+function undoTask(id){const t=hub().tasks.find(x=>x.id===id);if(!t)return;delete t.doneAt;delete t.doneById;delete t.doneByName;t.updatedAt=nowIso();saveState();toast("Remis à faire ↩")}
+
+function openJobForm(id=""){
+  const j=id?hub().jobs.find(x=>x.id===id):null;
+  const lines=(j?.items||[]).map(x=>x.label).join("\n");
+  openModal(`${modalHead(j?"Modifier la job":"Nouvelle job")}
+    <form id="jobForm"><label>Nom de la job<input name="title" required maxlength="120" value="${esc(j?.title||"")}" placeholder="Ex. Garage chez Marc"></label>
+      <label>Matériel / choses à apporter<textarea name="items" rows="8" placeholder="4 x 2x4\n1 boîte de vis 3 po\nClous\nLaser">${esc(lines)}</textarea></label>
+      <label>Note<textarea name="note" placeholder="Détail de chantier, adresse, etc.">${esc(j?.note||"")}</textarea></label>
+      <div class="tiny">🧰 Les jobs n’ont aucun rappel automatique.</div>
+      <div class="modalActions"><button type="button" class="btn" id="cancelJob">Annuler</button><button class="btn primary">${j?"Enregistrer":"Créer la job"}</button></div>
+      ${j?`<button type="button" class="btn danger full" id="deleteJob" style="margin-top:8px">🗑 Supprimer la job</button>`:""}
+    </form>`);
+  $("#cancelJob").onclick=closeModal;
+  $("#jobForm").onsubmit=e=>{e.preventDefault();const f=new FormData(e.target),labels=String(f.get("items")||"").split(/\r?\n/).map(x=>x.trim()).filter(Boolean);const obj=j||{id:uid("job"),createdAt:nowIso(),createdById:profile.memberId||"",createdByName:myName(),items:[]};const old=new Map((obj.items||[]).map(x=>[normalize(x.label),x]));obj.title=String(f.get("title")||"").trim();obj.note=String(f.get("note")||"").trim();obj.items=labels.map(label=>old.get(normalize(label))||{id:uid("itm"),label,done:false,createdAt:nowIso(),updatedAt:nowIso()});obj.updatedAt=nowIso();if(!j)hub().jobs.push(obj);saveState();closeModal();toast(j?"Job modifiée 🧰":"Job créée 🧰")};
+  $("#deleteJob")?.addEventListener("click",()=>{if(!confirm("Supprimer cette job?"))return;j.deletedAt=nowIso();j.updatedAt=nowIso();saveState();closeModal();toast("Job supprimée")});
+}
+function toggleJobItem(jobId,itemId,checked){const j=hub().jobs.find(x=>x.id===jobId);const it=j?.items?.find(x=>x.id===itemId);if(!it)return;it.done=!!checked;it.doneAt=checked?nowIso():null;it.doneByName=checked?myName():"";it.updatedAt=nowIso();j.updatedAt=nowIso();saveState()}
+function addJobItemPrompt(jobId){const j=hub().jobs.find(x=>x.id===jobId);if(!j)return;const label=prompt("Quoi ajouter à la job?");if(!label?.trim())return;j.items=j.items||[];j.items.push({id:uid("itm"),label:label.trim(),done:false,createdAt:nowIso(),updatedAt:nowIso()});j.updatedAt=nowIso();saveState();toast("Ajouté à la job 🧰")}
+function archiveJob(id){const j=hub().jobs.find(x=>x.id===id);if(!j)return;j.archivedAt=nowIso();j.archivedByName=myName();j.updatedAt=nowIso();saveState();toast("Job archivée 📦")}
+function restoreJob(id){const j=hub().jobs.find(x=>x.id===id);if(!j)return;delete j.archivedAt;delete j.archivedByName;j.updatedAt=nowIso();saveState();toast("Job réactivée 🧰")}
+
+async function wizzTask(id){const t=hub().tasks.find(x=>x.id===id);if(!t)return;const target=t.assigneeId&&t.assigneeId!=="all"&&t.assigneeId!==profile.memberId?t.assigneeId:"";await sendWizz(`⚡ WIZZ de ${myName()}`,`${t.title}${t.note?` · ${t.note}`:""}`,target)}
+async function wizzJob(id){const j=hub().jobs.find(x=>x.id===id);if(!j)return;await sendWizz(`⚡ WIZZ de ${myName()}`,`🧰 Job : ${j.title}`)}
+function openFreeWizz(prefill=""){
+  openModal(`${modalHead("⚡ Envoyer un WIZZ")}<form id="wizzForm"><label>Message<textarea name="message" required placeholder="Ex. Pense à acheter du lait">${esc(prefill)}</textarea></label><button class="btn primary full">⚡ WIZZ maintenant</button></form>`);
+  $("#wizzForm").onsubmit=async e=>{e.preventDefault();const msg=String(new FormData(e.target).get("message")||"").trim();if(!msg)return;closeModal();await sendWizz(`⚡ WIZZ de ${myName()}`,msg)};
+}
+async function sendWizz(title,message,targetMemberId=""){
+  if(!profile.token||!profile.apiUrl)return toast("Connecte d’abord la liste familiale dans Réglages");
+  try{const j=await api("/api/wizz",{method:"POST",body:JSON.stringify({title,message,targetMemberId})});toast(j.sent?"WIZZ envoyé ⚡":"WIZZ envoyé au serveur, mais aucun téléphone cible") }catch(e){toast("WIZZ impossible : "+e.message)}
+}
+
+function openImport(){
+  openModal(`${modalHead("⚡ Import ChatGPT")}<div class="tiny">Tu peux coller plusieurs lignes TASK et JOB.</div><div class="codeBox" style="margin-top:8px">TASK|ACHAT|Acheter du lait|NOUS|NORMAL|2 %<br>JOB|Garage chez Marc|2x4=4|Vis 3po=1 boîte|Clous|APPORTER=Laser</div><label>Codes<textarea id="importText" rows="10" placeholder="Colle les codes ici"></textarea></label><button class="btn primary full" id="doImport">Importer</button><div id="importPreview" class="tiny" style="margin-top:8px"></div>`);
+  $("#doImport").onclick=()=>applyImport($("#importText").value);
+}
+function parseType(v){const n=normalize(v).replace(/[_-]/g," ");if(["achat","acheter","buy"].includes(n))return"buy";if(["appel","appeler","call"].includes(n))return"call";if(["attente","en attente","wait"].includes(n))return"wait";return"todo"}
+function resolveAssignee(token){const n=normalize(token);if(!token||["nous","nous deux","all","tous"].includes(n))return{id:"all",name:"Nous deux"};if(["moi","me"].includes(n))return{id:profile.memberId||"all",name:myName()};const m=members.find(x=>normalize(x.name)===n||normalize(x.name).includes(n)||n.includes(normalize(x.name)));return m?{id:m.id,name:m.name}:{id:"all",name:"Nous deux"}}
+function parseJobPart(raw){const p=String(raw||"").trim();if(!p)return null;const eq=p.indexOf("=");if(eq<0)return{kind:"item",label:p};const key=p.slice(0,eq).trim(),val=p.slice(eq+1).trim();const kn=normalize(key);if(kn==="note"||kn==="notes")return{kind:"note",label:val};if(["apporter","a apporter","bring"].includes(kn))return{kind:"item",label:`À apporter : ${val}`};if(["mat","materiel","material"].includes(kn))return{kind:"item",label:val};return{kind:"item",label:`${val} · ${key}`}}
+function applyImport(text){
+  const lines=String(text||"").split(/\r?\n/).map(x=>x.trim()).filter(Boolean);let added=0,errors=[];
+  lines.forEach((line,i)=>{const p=line.split("|").map(x=>x.trim()),kind=normalize(p[0]);
+    if(kind==="task"||kind==="tache"){
+      const type=parseType(p[1]),title=p[2];if(!title){errors.push(`Ligne ${i+1}: titre manquant`);return}const a=resolveAssignee(p[3]),priority=/hot|priorite|🔥|urgent/i.test(p[4]||"")?"hot":"normal",note=p.slice(5).join(" | ");hub().tasks.push({id:uid("task"),title,type,assigneeId:a.id,assigneeName:a.name,priority,note,createdAt:nowIso(),createdById:profile.memberId||"",createdByName:myName(),updatedAt:nowIso()});added++;return;
+    }
+    if(kind==="job"){
+      const title=p[1];if(!title){errors.push(`Ligne ${i+1}: nom de job manquant`);return}let note="";const items=[];p.slice(2).forEach(x=>{const q=parseJobPart(x);if(!q)return;if(q.kind==="note")note=q.label;else items.push({id:uid("itm"),label:q.label,done:false,createdAt:nowIso(),updatedAt:nowIso()})});hub().jobs.push({id:uid("job"),title,note,items,createdAt:nowIso(),createdById:profile.memberId||"",createdByName:myName(),updatedAt:nowIso()});added++;return;
+    }
+    errors.push(`Ligne ${i+1}: doit commencer par TASK ou JOB`);
   });
-  return out.sort((a,b)=>a.date.localeCompare(b.date)||(a.line-b.line)||(a.index-b.index));
-}
-function planTrackerData(){
-  const markers=planRemainingMarkers(), now=today();
-  if(!markers.length)return {active:null,next:null};
-  const past=markers.filter(x=>x.date<=now);
-  const active=past.length?past[past.length-1]:null;
-  // S'il y a plusieurs « restants » la même journée (ex. Frank, Mari, familial),
-  // le suivi utilise le DERNIER repère de cette journée, donc le restant familial final.
-  const future=markers.filter(x=>x.date>now);
-  let next=null;
-  if(future.length){
-    const firstDate=future[0].date;
-    const sameDate=future.filter(x=>x.date===firstDate);
-    next=sameDate[sameDate.length-1]||future[0];
-  }
-  if(!active)return {active:null,next};
-  const actual=Number(currentBalance().toFixed(2));
-  const planned=Number(active.amount.toFixed(2));
-  const diff=Number((actual-planned).toFixed(2));
-  return {active,next,actual,planned,diff};
-}
-function ensurePlanTrackerHome(){
-  let box=document.getElementById("planTrackerCard");
-  if(box)return box;
-  const stats=document.querySelector("#homePage .stats4");
-  if(!stats)return null;
-  box=document.createElement("div");
-  box.id="planTrackerCard";
-  box.className="card";
-  box.style.marginTop="12px";
-  stats.insertAdjacentElement("afterend",box);
-  return box;
-}
-function renderPlanTracker(){
-  const box=ensurePlanTrackerHome();if(!box)return;
-  const t=planTrackerData();
-  if(!t.active){
-    if(t.next){
-      box.innerHTML=`<div class="catTop"><strong>📊 Suivi du plan</strong><strong>${money(t.next.amount)}</strong></div><div class="sub">Prochain repère : ${esc(fmtDate(t.next.date))} · ${esc(t.next.label||"Restant prévu")}</div><div class="sub" style="margin-top:6px">Le suivi réel vs prévu commencera à ce repère.</div>`;
-    }else{
-      box.innerHTML=`<div class="catTop"><strong>📊 Suivi du plan</strong></div><div class="sub">Ajoute un « Restant prévu » dans le budget importé pour activer le suivi.</div>`;
-    }
-    return;
-  }
-  const d=t.diff;
-  const status=Math.abs(d)<0.01
-    ? `<strong class="okText">✅ Pile sur le budget</strong>`
-    : d>0
-      ? `<strong class="okText">🟢 ${money(d)} mieux que prévu</strong>`
-      : `<strong class="dangerText">🔴 ${money(Math.abs(d))} sous le budget prévu</strong>`;
-  const next=t.next?`<div class="sub" style="margin-top:8px">Prochain repère : <b>${money(t.next.amount)}</b> · ${esc(fmtDate(t.next.date))}</div>`:"";
-  box.innerHTML=`<div class="catTop"><strong>📊 Suivi du plan</strong>${status}</div><div class="catTop" style="margin-top:8px"><span>Prévu au dernier repère</span><strong>${money(t.planned)}</strong></div><div class="catTop"><span>Solde réel dans l'app</span><strong>${money(t.actual)}</strong></div><div class="sub" style="margin-top:6px">Repère du ${esc(fmtDate(t.active.date))} · ${esc(t.active.label||"Restant prévu")}</div>${next}`;
+  if(added)saveState();if(errors.length){$("#importPreview").innerHTML=`⚠️ ${esc(errors.join(" · "))}<br>✅ ${added} ajouté(s)`;toast(`${added} ajouté(s), ${errors.length} erreur(s)`)}else{closeModal();toast(`${added} élément(s) importé(s) ✅`)}
 }
 
-function ensureNextPayProjectionHome(){
-  let box=document.getElementById("nextPayProjectionCard");
-  if(box)return box;
-  const grid=document.querySelector("#homePage .heroGrid");
-  if(!grid)return null;
-  box=document.createElement("div");
-  box.id="nextPayProjectionCard";
-  box.style.marginTop="12px";
-  box.style.padding="12px";
-  box.style.border="1px solid var(--card2)";
-  box.style.borderRadius="16px";
-  box.style.background="var(--card2)";
-  grid.insertAdjacentElement("afterend",box);
-  return box;
-}
-function renderNextPayProjection(){
-  const p=nextPayProjection();
-  const cell=document.getElementById("availableUntilPay")?.parentElement;
-  const label=cell?.querySelector("span");
-  if(label)label.textContent="Avant prochaine paie";
-  const box=ensureNextPayProjectionHome();if(!box)return;
-  if(!p.payDate){
-    box.innerHTML=`<div class="catTop"><strong>💵 Projection prochaine paie</strong></div><div class="sub">Aucune paie planifiée dans les 60 prochains jours. Le montant « Avant prochaine paie » réserve seulement les paiements des 14 prochains jours.</div>`;
-    return;
-  }
-  const payLabel=p.count>1?"Paies prévues":"Paie prévue";
-  const payValue=p.hasUnknown?"Montant à confirmer":money(p.payAmount);
-  const afterLine=p.after==null
-    ? `<div class="catTop"><span>Après paie + paiements du jour</span><strong>À confirmer</strong></div>`
-    : `<div class="catTop"><span>Après paie + paiements du jour</span><strong>${money(p.after)}</strong></div>`;
-  box.innerHTML=`<div class="catTop"><strong>💵 Projection prochaine paie</strong><strong>${esc(fmtDate(p.payDate))}</strong></div>
-    <div class="catTop" style="margin-top:8px"><span>Solde réel maintenant</span><strong>${money(p.bal)}</strong></div>
-    <div class="catTop"><span>À payer AVANT la paie</span><strong>−${money(p.dueBefore)}</strong></div>
-    <div class="catTop"><span>Juste avant la paie</span><strong>${money(p.before)}</strong></div>
-    <div class="catTop"><span>${payLabel}</span><strong>${payValue}</strong></div>
-    <div class="catTop"><span>Paiements prévus le même jour</span><strong>−${money(p.sameDayDue)}</strong></div>
-    ${afterLine}
-    <div class="sub" style="margin-top:6px">Les paiements déjà couverts par ton budget mensuel ne sont pas comptés une deuxième fois.</div>`;
-}
-function renderHome(){
-  const bal=currentBalance();$("#budgetBalance").textContent=money(bal);$("#availableUntilPay").textContent=money(availableToPay());$("#overThisMonth").textContent=money(overMonth());
-  const od=$("#overdraftCard");
-  if(bal<0){const used=Math.abs(bal),limit=Number(state.settings.overdraftLimit||1000);od.innerHTML=`<div class="overdraft">🚨 <strong>Découvert utilisé ${money(used)} / ${money(limit)}</strong><div class="sub">Il reste ${money(Math.max(0,limit-used))} avant la limite.</div></div>`}else od.innerHTML="";
-  const items=dueItems(addDays(today(),-31),addDays(today(),7));
-  const upcoming=items.filter(x=>x.due>=today()&&!x.status.paidAt), late=items.filter(x=>x.due<today()&&!x.status.paidAt && (!x.status.snoozedUntil||x.status.snoozedUntil<=today()));
-  $("#bills7").textContent=upcoming.length;$("#lateCount").textContent=late.length;
-  const week=expensesWeek(), spend=week.reduce((s,t)=>s+Number(t.amount||0),0), groc=week.filter(t=>t.category==="Épicerie").reduce((s,t)=>s+Number(t.amount||0),0);
-  $("#spendWeek").textContent=money(spend);$("#groceryWeek").textContent=`${money(groc)} / ${money(state.settings.groceryBudget||0)}`;
-  const show=items.filter(x=>!x.status.paidAt && (x.due>=addDays(today(),-14))).slice(0,7);
-  $("#homeBills").innerHTML=show.length?show.map(renderBillRow).join(""):`<div class="card muted">Aucun paiement urgent 🎉</div>`;
-  renderNextPayProjection();
-  renderPlanTracker();
-}
-function renderBillRow(x){
-  const late=x.due<today(), snooze=x.status.snoozedUntil&&x.status.snoozedUntil>today();
-  let badge=late?`<span class="badge red">EN RETARD</span>`:`<span class="badge orange">${esc(fmtDate(x.due))}</span>`;
-  if(snooze)badge=`<span class="badge orange">REPORTÉ AU ${esc(fmtDate(x.status.snoozedUntil))}</span>`;
-  return `<div class="billRow"><div class="billMain"><div class="billTitle">${esc(x.bill.name)}</div><div class="sub">${esc(x.bill.category||"Facture")}</div>${badge}</div><div class="amount">${money(x.bill.amount)}</div><div class="rowActions"><button onclick="BP.payBill('${x.bill.id}','${x.due}')" title="Marquer payée">✅</button><button onclick="BP.snooze('${x.bill.id}','${x.due}')" title="Reporter">⏰</button><button onclick="BP.editBill('${x.bill.id}')" title="Modifier">✏️</button><button onclick="BP.deleteBill('${x.bill.id}')" title="Supprimer">🗑️</button></div></div>`
-}
-function renderGoals(){
-  const el=$("#homeGoals");if(!el)return;
-  el.innerHTML=state.goals.length?state.goals.map(g=>{const pct=Math.min(100,Math.round((Number(g.saved||0)/Math.max(1,Number(g.target||0)))*100));return `<div class="card"><div class="catTop"><strong>🎯 ${esc(g.name)}</strong><strong>${money(g.saved)} / ${money(g.target)}</strong></div><div class="bar"><i style="width:${pct}%"></i></div><button class="smallBtn" style="margin-top:9px" onclick="BP.addGoalMoney('${g.id}')">＋ Mettre de côté</button></div>`}).join(""):`<div class="card muted">Aucun objectif pour l'instant.</div>`;
-}
-function renderCalendar(){
-  const from=today(),to=addDays(from,calendarDays), events=[];
-  dueItems(from,to).forEach(x=>events.push({date:x.due,type:"bill",x}));
-  state.incomeSchedules.forEach(s=>incomeOccurrences(s,from,to).forEach(date=>events.push({date,type:"income",sched:s})));
-  events.sort((a,b)=>a.date.localeCompare(b.date));
-  $("#calendarList").innerHTML=events.length?events.map(e=>{
-    const d=parseLocal(e.date);
-    if(e.type==="income"){
-      const received=!!e.sched.receivedAt;
-      return `<div class="timelineRow"><div class="timelineDate">${d.toLocaleDateString("fr-CA",{weekday:"short"})}<b>${d.getDate()}</b></div><div class="historyMain"><div class="historyTitle">💵 ${esc(e.sched.name)}</div><div class="sub">${received?"Reçue":(e.sched.amount==null?"Montant à entrer":money(e.sched.amount))}</div></div>${e.sched.amount!=null?`<div class="amount ${received?"okText":""}">${money(e.sched.receivedAmount??e.sched.amount)}</div>`:""}${e.sched.importedMonthlyPlan&&!received?`<div class="rowActions"><button onclick="BP.receiveIncome('${e.sched.id}','${e.date}')" title="Marquer reçue">✅</button></div>`:""}</div>`;
-    }
-    const st=e.x.status, paid=!!st.paidAt;
-    return `<div class="timelineRow"><div class="timelineDate">${d.toLocaleDateString("fr-CA",{weekday:"short"})}<b>${d.getDate()}</b></div><div class="historyMain"><div class="historyTitle">🧾 ${esc(e.x.bill.name)}</div><div class="sub">${paid?"Payée":(st.snoozedUntil?`Reportée au ${fmtDate(st.snoozedUntil)}`:"À payer")}</div></div><div class="amount ${paid?"okText":""}">${money(st.paidAmount??e.x.bill.amount)}</div><div class="rowActions"><button onclick="BP.editBill('${e.x.bill.id}')" title="Modifier">✏️</button><button onclick="BP.deleteBill('${e.x.bill.id}')" title="Supprimer">🗑️</button></div></div>`;
-  }).join(""):`<div class="card muted">Rien à afficher.</div>`;
-}
-function historyItems(){
-  const arr=[];
-  state.transactions.forEach(t=>arr.push({date:t.date,kind:t.kind,id:t.id,title:t.merchant||t.name||(t.kind==="income"?"Paie":"OVER"),amount:t.amount,category:t.category,member:t.memberName,note:t.note,raw:t}));
-  state.bills.forEach(b=>Object.entries(b.statuses||{}).forEach(([due,st])=>{if(st.paidAt)arr.push({date:st.paidAt.slice(0,10),kind:"bill",id:`${b.id}|${due}`,title:b.name,amount:st.paidAmount??b.amount,category:b.category||"Facture",member:st.paidBy,note:`Échéance ${due}`,raw:{bill:b,due,st}})}));
-  return arr.sort((a,b)=>b.date.localeCompare(a.date));
-}
-function renderHistory(){
-  let arr=historyItems();if(historyFilter!=="all")arr=arr.filter(x=>x.kind===historyFilter);
-  $("#historyList").innerHTML=arr.slice(0,250).map(x=>`<div class="historyRow"><div class="historyMain"><div class="historyTitle">${x.kind==="expense"?"💸":x.kind==="income"?"💵":x.kind==="over"?"⚡":"🧾"} ${esc(x.title)}</div><div class="sub">${esc(fmtDate(x.date))}${x.category?` · ${esc(x.category)}`:""}${x.member?` · ${esc(x.member)}`:""}</div></div><div class="amount ${x.kind==="income"?"okText":x.kind==="over"?"warnText":""}">${x.kind==="income"?"+":x.kind==="expense"||x.kind==="bill"?"−":""}${money(x.amount)}</div><div class="rowActions"><button onclick="BP.editHistory('${x.kind}','${x.id}')">✏️</button></div></div>`).join("")||`<div class="card muted">Aucun historique.</div>`;
-}
-function monthData(key){
-  const tx=state.transactions.filter(t=>monthKey(t.date)===key), bills=[];
-  state.bills.forEach(b=>Object.entries(b.statuses||{}).forEach(([due,st])=>{if(st.paidAt&&monthKey(st.paidAt)===key)bills.push({bill:b,due,st})}));
-  const income=tx.filter(t=>t.kind==="income").reduce((s,t)=>s+Number(t.amount||0),0), over=tx.filter(t=>t.kind==="over").reduce((s,t)=>s+Number(t.amount||0),0), expenses=tx.filter(t=>t.kind==="expense").reduce((s,t)=>s+Number(t.amount||0),0), billPaid=bills.reduce((s,x)=>s+Number(x.st.paidAmount??x.bill.amount??0),0);
-  const cats={};tx.filter(t=>t.kind==="expense").forEach(t=>cats[t.category||"Autre"]=(cats[t.category||"Autre"]||0)+Number(t.amount||0));bills.forEach(x=>{const k=(x.bill.category&&x.bill.category!=="Facture")?x.bill.category:"Factures";cats[k]=(cats[k]||0)+Number(x.st.paidAmount??x.bill.amount??0)});
-  let minBal=null,negDays=0;
-  const first=`${key}-01`,last=monthlyDate(Number(key.slice(0,4)),Number(key.slice(5,7)),31);
-  let b=Number(state.settings.startBalance||0); // approximation month path from start
-  const daily={};
-  state.transactions.filter(t=>t.date<=last&&t.date>=state.settings.startBalanceDate).forEach(t=>{daily[t.date]=daily[t.date]||0;daily[t.date]+=t.kind==="income"?Number(t.amount||0):t.kind==="expense"?-Number(t.amount||0):0});
-  state.bills.forEach(bl=>Object.entries(bl.statuses||{}).forEach(([d,st])=>{const p=(st.paidAt||"").slice(0,10);if(p&&p<=last&&p>=state.settings.startBalanceDate){daily[p]=daily[p]||0;daily[p]-=Number(st.paidAmount??bl.amount??0)}}));
-  let cur=state.settings.startBalanceDate; if(cur<=last){while(cur<=last){b+=daily[cur]||0;if(cur>=first){if(b<0)negDays++;minBal=minBal===null?b:Math.min(minBal,b)}cur=addDays(cur,1)}}
-  return {income,over,expenses,billPaid,totalOut:expenses+billPaid,net:income-expenses-billPaid,cats,negDays,minBal:minBal??0,tx,bills};
-}
-function renderSummary(){
-  const key=`${summaryCursor.getFullYear()}-${pad(summaryCursor.getMonth()+1)}`, m=monthData(key);
-  $("#summaryMonth").textContent=summaryCursor.toLocaleDateString("fr-CA",{month:"long",year:"numeric"});
-  const prev=new Date(summaryCursor);prev.setMonth(prev.getMonth()-1);const pk=`${prev.getFullYear()}-${pad(prev.getMonth()+1)}`,pm=monthData(pk);const diff=m.totalOut-pm.totalOut;
-  const cells=[["Revenus",m.income],["Dépenses",m.totalOut],["OVER séparé",m.over],["Résultat",m.net],["Jours découvert",m.negDays],["Plus bas solde",m.minBal],["Vs mois passé",diff]];
-  $("#summaryCards").innerHTML=cells.map(([a,v],i)=>`<div class="summaryCell"><span>${a}</span><strong>${i===4?v:money(v)}</strong></div>`).join("");
-  const max=Math.max(1,...Object.values(m.cats));$("#categoryBreakdown").innerHTML=Object.entries(m.cats).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`<div class="catRow"><div class="catTop"><span>${esc(k)}</span><strong>${money(v)}</strong></div><div class="bar"><i style="width:${Math.max(4,v/max*100)}%"></i></div></div>`).join("")||`<div class="muted small">Pas encore de dépenses ce mois-ci.</div>`;
-}
-function renderQuickMerchants(){
-  const recent=state.transactions.filter(t=>t.kind==="expense"&&t.merchant).slice().sort((a,b)=>b.date.localeCompare(a.date)).map(t=>t.merchant);
-  const list=[...new Set([...recent,...merchants])].slice(0,16);
-  $("#quickMerchants").innerHTML=list.map(m=>`<button class="chip" onclick="BP.quickMerchant('${encodeURIComponent(m)}')">${esc(m)}</button>`).join("");
-}
-function renderSettings(){
-  const s=state.settings;
-  $("#startBalance").value=s.startBalance;$("#startBalanceDate").value=s.startBalanceDate;$("#overdraftLimit").value=s.overdraftLimit;$("#groceryBudget").value=s.groceryBudget;$("#reminderHour").value=s.reminderHour;$("#sundayReminder").checked=s.sundayReminder;$("#dayBeforeReminder").checked=s.dayBeforeReminder;$("#lateReminder").checked=s.lateReminder;$("#historyMonths").value=s.historyMonths;
-  $("#apiUrl").value=profile.apiUrl||"";$("#memberName").value=profile.memberName||"";$("#oneSignalAppId").value=profile.oneSignalAppId||"";
-  const cb=state.settings.categoryBudgets||{};$("#categoryBudgetList").innerHTML=Object.keys(cb).length?Object.entries(cb).map(([k,v])=>`<div class="billRow"><div class="billMain"><div class="billTitle">${esc(k)}</div><div class="sub">Budget mensuel</div></div><div class="amount">${money(v)}</div><div class="rowActions"><button onclick="BP.removeCategoryBudget('${encodeURIComponent(k)}')">✕</button></div></div>`).join(""):`<div class="muted small">Aucun budget mensuel supplémentaire.</div>`;
-  $("#cloudStatus").innerHTML=profile.token?`✅ Connecté comme <b>${esc(profile.memberName||"membre")}</b><br>Code famille : <b>${esc(profile.joinCode||"—")}</b>`:`Pas encore connecté — l'app fonctionne localement.`;
-  ensureBalanceTools();
-  ensureOctCleanupButton();
-}
-function updateSyncLine(){
-  const build="CALENDAR-V5";
-  $("#syncLine").textContent=profile.token?`Budget partagé · ${profile.memberName||"connecté"} · ${build}`:`Mode local · ${build}`;
-}
-
-function openModal(html){$("#modal").innerHTML=html;$("#modalBackdrop").classList.remove("hidden")}
-function closeModal(){$("#modalBackdrop").classList.add("hidden")}
-function modalHeader(title){return `<div class="modalHeader"><h2>${title}</h2><button class="closeBtn" onclick="BP.close()">✕</button></div>`}
-function expenseForm(prefill=""){
-  openModal(`${modalHeader("Ajouter une dépense")}<form id="expenseForm" class="formGrid">
-    <label class="span2">Montant<input name="amount" type="number" step=".01" inputmode="decimal" required autofocus></label>
-    <label class="span2">Commerce / dépense<input name="merchant" value="${esc(prefill)}" list="merchantList" required></label>
-    <datalist id="merchantList">${merchants.map(m=>`<option>${esc(m)}</option>`).join("")}</datalist>
-    <label>Catégorie<select name="category">${categories.map(c=>`<option>${c}</option>`).join("")}</select></label>
-    <label>Date<input name="date" type="date" value="${today()}" required></label>
-    <label>Type<select name="needFun"><option value="">Non précisé</option><option>Besoin</option><option>Plaisir</option></select></label>
-    <label>Qui<input name="memberName" value="${esc(profile.memberName||"Moi")}"></label>
-    <label class="span2">Note (facultatif)<input name="note"></label>
-    <button class="fullBtn primary span2">Enregistrer</button>
-  </form>`);
-  $("#expenseForm").onsubmit=e=>{e.preventDefault();const f=new FormData(e.target);state.transactions.unshift({id:uid("tx"),kind:"expense",amount:Number(f.get("amount")),merchant:f.get("merchant"),category:f.get("category"),date:f.get("date"),needFun:f.get("needFun"),memberName:f.get("memberName"),note:f.get("note"),createdAt:nowIso(),updatedAt:nowIso()});saveState();closeModal();toast("Dépense ajoutée ✅")}
-}
-function incomeForm(kind="income"){
-  const over=kind==="over";
-  openModal(`${modalHeader(over?"Ajouter de l'OVER":"Ajouter une paie")}<form id="incomeForm">
-    <label>Montant<input name="amount" type="number" step=".01" inputmode="decimal" required autofocus></label>
-    <label>Date<input name="date" type="date" value="${today()}" required></label>
-    <label>Note<input name="note" placeholder="${over?"Ex. heures supplémentaires":"Facultatif"}"></label>
-    <button class="fullBtn primary">Enregistrer</button>
-    ${over?`<p class="muted small">⚡ L'OVER est suivi séparément et n'augmente pas le budget disponible.</p>`:""}
-  </form>`);
-  $("#incomeForm").onsubmit=e=>{e.preventDefault();const f=new FormData(e.target);state.transactions.unshift({id:uid("tx"),kind,amount:Number(f.get("amount")),date:f.get("date"),name:over?"OVER":"Paie",memberName:profile.memberName||"Moi",note:f.get("note"),createdAt:nowIso(),updatedAt:nowIso()});saveState();closeModal();toast(over?"OVER enregistré ⚡":"Paie ajoutée 💵")}
-}
-function billForm(editId=null){
-  const b=editId?state.bills.find(x=>x.id===editId):null;
-  openModal(`${modalHeader(b?"Modifier facture":"Ajouter une facture")}<form id="billForm" class="formGrid">
-    <label class="span2">Nom<input name="name" value="${esc(b?.name||"")}" required></label>
-    <label>Montant<input name="amount" type="number" step=".01" value="${b?.amount??""}" required></label>
-    <label>Catégorie<select name="category">${categories.map(c=>`<option ${b?.category===c?"selected":""}>${c}</option>`).join("")}</select></label>
-    <label>Fréquence<select name="frequency"><option value="monthly" ${b?.frequency==="monthly"?"selected":""}>Mensuelle</option><option value="weekly" ${b?.frequency==="weekly"?"selected":""}>Hebdomadaire</option><option value="one" ${b?.frequency==="one"?"selected":""}>Une fois</option></select></label>
-    <label>Jour du mois<input name="dueDay" type="number" min="1" max="31" value="${b?.dueDay??1}"></label>
-    <label>Date unique / départ<input name="dueDate" type="date" value="${b?.dueDate||b?.startDate||today()}"></label>
-    <label class="switchRow"><span>Montant variable</span><input name="variable" type="checkbox" ${b?.variable?"checked":""}></label>
-    <label class="switchRow"><span>Prélèvement auto</span><input name="autopay" type="checkbox" ${b?.autopay?"checked":""}></label>
-    <button class="fullBtn primary span2">${b?"Enregistrer":"Ajouter"}</button>
-    ${b?`<button type="button" class="fullBtn span2" onclick="BP.endBill('${b.id}')">🏁 Prêt/facture terminé</button><button type="button" class="fullBtn span2" onclick="BP.deleteBill('${b.id}')">🗑️ Supprimer la facture</button>`:""}
-  </form>`);
-  $("#billForm").onsubmit=e=>{e.preventDefault();const f=new FormData(e.target);const obj=b||{id:uid("bill"),statuses:{},createdAt:nowIso()};Object.assign(obj,{name:f.get("name"),amount:Number(f.get("amount")),category:f.get("category"),frequency:f.get("frequency"),dueDay:Number(f.get("dueDay")||1),dueDate:f.get("dueDate"),startDate:f.get("dueDate"),activeFrom:b?.activeFrom||today(),variable:f.get("variable")==="on",autopay:f.get("autopay")==="on",active:true,updatedAt:nowIso()});if(!b)state.bills.push(obj);saveState();closeModal();toast(b?"Facture modifiée":"Facture ajoutée")}
-}
-function goalForm(){
-  openModal(`${modalHeader("Nouvel objectif")}<form id="goalForm"><label>Nom<input name="name" required placeholder="Noël, vacances, urgence..."></label><label>Objectif $<input name="target" type="number" step=".01" required></label><label>Déjà mis de côté<input name="saved" type="number" step=".01" value="0"></label><button class="fullBtn primary">Ajouter</button></form>`);
-  $("#goalForm").onsubmit=e=>{e.preventDefault();const f=new FormData(e.target);state.goals.push({id:uid("goal"),name:f.get("name"),target:Number(f.get("target")),saved:Number(f.get("saved")),updatedAt:nowIso()});saveState();closeModal();toast("Objectif ajouté 🎯")}
-}
-function afford(){
-  openModal(`${modalHeader("Peut-on se le permettre?")}<form id="affordForm"><label>Montant de l'achat<input name="amount" type="number" step=".01" required autofocus></label><button class="fullBtn primary">Calculer</button><div id="affordResult"></div></form>`);
-  $("#affordForm").onsubmit=e=>{e.preventDefault();const a=Number(new FormData(e.target).get("amount")||0), before=availableToPay(), after=before-a, limit=Number(state.settings.overdraftLimit||1000);let txt;
-    if(after>=0)txt=`<div class="card"><h3 class="okText">✅ Oui sans découvert</h3><p>Il resterait <b>${money(after)}</b> avant la prochaine paie après les obligations prévues.</p></div>`;
-    else if(after>=-limit)txt=`<div class="card"><h3 class="warnText">⚠️ Ça utiliserait le découvert</h3><p>Projection : <b>${money(after)}</b>. Techniquement possible, mais pas avec les salaires disponibles seulement.</p></div>`;
-    else txt=`<div class="card"><h3 class="dangerText">🚨 Non</h3><p>Projection : <b>${money(after)}</b>, donc sous la limite de découvert de ${money(-limit)}.</p></div>`;
-    $("#affordResult").innerHTML=txt;
-  }
-}
-function payBill(id,due){
-  const b=state.bills.find(x=>x.id===id);if(!b)return;
-  const st=billStatus(b,due), planned=Number(st.paidAmount??b.amount??0);
-  let amount=planned;
-
-  // Les paiements provenant du budget mensuel gardent le montant prévu,
-  // mais permettent de confirmer ou corriger le montant réellement payé.
-  if(b.importedMonthlyPlan||b.calendarFlexible){
-    const exact=confirm(`🧾 ${b.name}\n\nMontant prévu : ${money(planned)}\n\nAs-tu payé exactement ce montant?\n\nOK = oui\nAnnuler = corriger le montant`);
-    if(!exact){
-      const raw=prompt(`Entre le montant réellement payé pour ${b.name}`,String(planned));
-      if(raw===null)return;
-      amount=importTextMoney(raw);
-      if(!Number.isFinite(amount)||amount<0)return toast("Entre un montant valide");
-    }
-  }else if(b.variable){
-    const raw=prompt(`Montant réellement payé pour ${b.name}`,String(planned));
-    if(raw===null)return;
-    amount=importTextMoney(raw);
-    if(!Number.isFinite(amount)||amount<0)return toast("Entre un montant valide");
-  }
-
-  setBillStatus(b,due,{paidAt:nowIso(),paidAmount:Number(amount),paidBy:profile.memberName||"Moi",snoozedUntil:null});
-  toast(Math.abs(Number(amount)-planned)>0.005?`Paiement réel ${money(amount)} · prévu ${money(planned)} ✅`:"Facture payée ✅")
-}
-function snooze(id,due){
-  const b=state.bills.find(x=>x.id===id);if(!b)return;const proposed=addDays(today(),2),d=prompt(`Reporter l'alerte de "${b.name}" jusqu'à quelle date?`,proposed);if(!d)return;
-  setBillStatus(b,due,{snoozedUntil:d});toast(`Rappels reportés au ${fmtDate(d)} ⏰`)
-}
-function endBill(id){
-  const b=state.bills.find(x=>x.id===id);if(!b)return;if(!confirm(`Terminer "${b.name}"? L'historique restera conservé.`))return;b.active=false;b.endedAt=today();b.updatedAt=nowIso();saveState();closeModal();toast(`🎉 ${b.name} terminé`)
-}
-function deleteBill(id){
-  const b=state.bills.find(x=>x.id===id);if(!b)return;
-  if(!confirm(`Supprimer "${b.name}"?\n\nElle disparaîtra du calendrier et des rappels. Les paiements déjà enregistrés resteront dans l'historique.`))return;
-  b.active=false;
-  b.deletedAt=nowIso();
-  delete b.endedAt;
-  b.updatedAt=nowIso();
-  saveState();
-  closeModal();
-  toast(`🗑️ ${b.name} supprimée`)
-}
-
-function addGoalMoney(id){
-  const g=state.goals.find(x=>x.id===id);if(!g)return;const v=prompt(`Combien ajouter à "${g.name}" ?`,"0");if(v===null)return;g.saved=Number(g.saved||0)+Number(v||0);g.updatedAt=nowIso();saveState();toast("Objectif mis à jour 🎯")
-}
-function addCategoryBudget(){
-  openModal(`${modalHeader("Budget par catégorie")}<form id="catBudgetForm"><label>Catégorie<select name="category">${categories.map(c=>`<option>${c}</option>`).join("")}</select></label><label>Budget mensuel<input name="amount" type="number" step=".01" required></label><button class="fullBtn primary">Enregistrer</button></form>`);
-  $("#catBudgetForm").onsubmit=e=>{e.preventDefault();const f=new FormData(e.target);state.settings.categoryBudgets=state.settings.categoryBudgets||{};state.settings.categoryBudgets[f.get("category")]=Number(f.get("amount"));touchSettings();saveState();closeModal();toast("Budget catégorie ajouté")}
-}
-function removeCategoryBudget(encoded){
-  const k=decodeURIComponent(encoded);if(!confirm(`Enlever le budget "${k}" ?`))return;delete state.settings.categoryBudgets[k];touchSettings();saveState()
-}
-function editHistory(kind,id){
-  if(kind==="bill"){
-    const [billId,due]=id.split("|"),b=state.bills.find(x=>x.id===billId);if(!b)return;
-    if(confirm(`Annuler le statut PAYÉ de "${b.name}" ?`)){delete b.statuses[due];b.updatedAt=nowIso();saveState();toast("Paiement annulé")}
-    return;
-  }
-  const t=state.transactions.find(x=>x.id===id);if(!t)return;
-  const amount=prompt("Modifier le montant",String(t.amount));if(amount===null)return;
-  t.amount=Number(amount||0);
-  if(kind==="expense"){const name=prompt("Modifier le nom / commerce",t.merchant||"");if(name!==null)t.merchant=name}
-  const date=prompt("Modifier la date (AAAA-MM-JJ)",t.date);if(date)t.date=date;
-  t.updatedAt=nowIso();saveState();toast("Entrée modifiée ✅")
-}
-function summaryText(){
-  const key=`${summaryCursor.getFullYear()}-${pad(summaryCursor.getMonth()+1)}`,m=monthData(key);
-  const cats=Object.entries(m.cats).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`${k}: ${money(v)}`).join("; ");
-  return `BUDGET PACK — BILAN ${key}
-Revenus normaux: ${money(m.income)}
-Dépenses totales: ${money(m.totalOut)}
-Résultat sans OVER: ${money(m.net)}
-OVER séparé: ${money(m.over)}
-Jours à découvert: ${m.negDays}
-Plus bas solde estimé: ${money(m.minBal)}
-Catégories: ${cats||"aucune"}
-Analyse ce bilan. Dis-moi clairement ce qui est bon, ce qui est à surveiller et 3 actions concrètes pour améliorer le prochain mois sans compter l'OVER comme revenu normal.`;
-}
-async function shareSummary(){
-  const text=summaryText();try{if(navigator.share)await navigator.share({title:"BUDGET PACK — Bilan",text});else{await navigator.clipboard.writeText(text);toast("Bilan copié — colle-le dans ChatGPT 🤖")}}catch(e){if(e.name!=="AbortError")toast("Impossible de partager")}
-}
-function exportData(){
-  const blob=new Blob([JSON.stringify({version:1,exportedAt:nowIso(),state},null,2)],{type:"application/json"}),a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=`budget-pack-${today()}.json`;a.click();URL.revokeObjectURL(a.href)
-}
-function importData(file){
-  const r=new FileReader();r.onload=()=>{try{const j=JSON.parse(r.result);if(!j.state)throw Error();state=j.state;applyCalendarFreshStart();saveState();toast("Sauvegarde importée ✅")}catch{toast("Fichier invalide")}};r.readAsText(file)
-}
-
-// ----- Cloud sync -----
-function apiBase(){return (profile.apiUrl||"").replace(/\/+$/,"")}
+function apiBase(){return String(profile.apiUrl||"").replace(/\/+$/,"")}
 async function api(path,opts={}){
-  const headers={...(opts.headers||{})};
-  // Sans jeton (création/join), text/plain évite le pré-test CORS sur certains navigateurs Android.
-  // Le Worker lit quand même le corps avec request.json().
-  if(opts.body) headers["Content-Type"]=profile.token?"application/json":"text/plain;charset=UTF-8";
-  if(profile.token) headers.Authorization=`Bearer ${profile.token}`;
-  const r=await fetch(apiBase()+path,{...opts,headers});const j=await r.json().catch(()=>({}));if(!r.ok){const err=new Error(j.error||`Erreur ${r.status}`);err.status=r.status;err.data=j;throw err}return j
+  const headers={...(opts.headers||{})};if(opts.body)headers["Content-Type"]=profile.token?"application/json":"text/plain;charset=UTF-8";if(profile.token)headers.Authorization=`Bearer ${profile.token}`;
+  const r=await fetch(apiBase()+path,{...opts,headers});let j={};try{j=await r.json()}catch{};if(!r.ok){const e=new Error(j.error||`Erreur ${r.status}`);e.status=r.status;e.payload=j;throw e}return j
 }
-function mergeById(a=[],b=[]){
-  const m=new Map();[...a,...b].forEach(x=>{const old=m.get(x.id);if(!old||String(x.updatedAt||"")>=String(old.updatedAt||""))m.set(x.id,x)});return [...m.values()]
-}
-function mergeMonthlyPlans(localPlans={},remotePlans={}){
-  const out={...remotePlans};
-  Object.entries(localPlans||{}).forEach(([k,v])=>{
-    const r=out[k];
-    if(!r||String(v?.updatedAt||"")>=String(r?.updatedAt||""))out[k]=v;
-  });
-  return out;
-}
+function mergeById(local=[],remote=[]){const m=new Map();[...remote,...local].forEach(x=>{if(!x?.id)return;const old=m.get(x.id);if(!old||String(x.updatedAt||x.createdAt||"")>=String(old.updatedAt||old.createdAt||""))m.set(x.id,x)});return [...m.values()]}
 function mergeState(local,remote){
-  if(!remote||!remote.settings)return local;
-  const settings=String(local.settings?.updatedAt||"")>=String(remote.settings?.updatedAt||"")?local.settings:remote.settings;
-  return {...remote,...local,settings,bills:mergeById(local.bills,remote.bills),transactions:mergeById(local.transactions,remote.transactions),incomeSchedules:mergeById(local.incomeSchedules,remote.incomeSchedules),goals:mergeById(local.goals,remote.goals),monthlyPlans:mergeMonthlyPlans(local.monthlyPlans,remote.monthlyPlans),archives:{...(remote.archives||{}),...(local.archives||{})},updatedAt:nowIso()}
+  const out={...(remote||{}),...(local||{})};const lh=local?.[HUB_KEY]||{},rh=remote?.[HUB_KEY]||{};out[HUB_KEY]={...rh,...lh,version:1,tasks:mergeById(lh.tasks||[],rh.tasks||[]),jobs:mergeById(lh.jobs||[],rh.jobs||[]),updatedAt:[lh.updatedAt,rh.updatedAt].filter(Boolean).sort().pop()||nowIso()};return out
 }
-// ----- Protection anti-doublons des paiements récurrents -----
-function recurringPaymentDuplicateKey(b){
-  if(!b||b.deletedAt||b.endedAt||b.active===false||b.frequency==="one"||calKind(b)==="appointment")return "";
-  const name=String(b.name||"").trim().normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase().replace(/\s+/g," ");
-  if(!name)return "";
-  const amountCents=Math.round(Number(b.amount||0)*100);
-  if(!Number.isFinite(amountCents))return "";
-  const freq=String(b.frequency||"monthly").toLowerCase();
-  const day=freq==="weekly"?`w${Number(b.weekday??-1)}`:`d${Number(b.dueDay||1)}`;
-  return `${name}|${amountCents}|${freq}|${day}`;
-}
-function mergeDuplicateStatuses(keeper,duplicate){
-  keeper.statuses=keeper.statuses||{};
-  Object.entries(duplicate.statuses||{}).forEach(([due,st])=>{
-    const old=keeper.statuses[due];
-    if(!old){keeper.statuses[due]=st;return}
-    const oldStamp=String(old.updatedAt||old.paidAt||"");
-    const newStamp=String(st?.updatedAt||st?.paidAt||"");
-    if(newStamp>oldStamp)keeper.statuses[due]=st;
-  });
-}
-function dedupeRecurringPayments(){
-  const groups=new Map();
-  (state.bills||[]).forEach(b=>{
-    const key=recurringPaymentDuplicateKey(b);if(!key)return;
-    const list=groups.get(key)||[];list.push(b);groups.set(key,list);
-  });
-  let removed=0;
-  for(const list of groups.values()){
-    if(list.length<2)continue;
-    // Choix déterministe : plus de statuts d'abord, puis ID stable.
-    list.sort((a,b)=>Object.keys(b.statuses||{}).length-Object.keys(a.statuses||{}).length||String(a.id||"").localeCompare(String(b.id||"")));
-    const keeper=list[0];
-    for(const dup of list.slice(1)){
-      mergeDuplicateStatuses(keeper,dup);
-      dup.active=false;
-      dup.deletedAt=dup.deletedAt||nowIso();
-      dup.duplicateOf=keeper.id;
-      dup.updatedAt=nowIso();
-      removed++;
-    }
-    if(removed){keeper.updatedAt=nowIso()}
-  }
-  if(removed){state.updatedAt=nowIso();localStorage.setItem(LS_KEY,JSON.stringify(state))}
-  return removed;
-}
-
 async function pullCloud(){
-  if(!profile.token||!apiBase()||cloudBusy)return;cloudBusy=true;
-  try{
-    const j=await api("/api/state");
-    if(j.data&&j.data.settings){
-      state=mergeState(state,j.data);
-      // Nouveau mode calendrier : coupe définitivement tout ce qui est avant le 30 oct. 2026.
-      const freshCleaned=applyCalendarFreshStart();
-      // Conserve les anciennes protections de migration, puis recoupe le passé au besoin.
-      const legacyCleaned=!!(migrateLegacyPlanRetards()|migrateOct2026CombinedRemainders()|freshCleaned);
-      migrateMonthlyPlansToOperational();
-      applyCalendarFreshStart();
-      const recurringCleaned=dedupeRecurringPayments();
-      const cleaned=legacyCleaned||recurringCleaned>0;
-      profile.cloudVersion=j.version||0;saveProfile();
-      localStorage.setItem(LS_KEY,JSON.stringify(state));
-      render();
-      // saveState planifie un push après 650 ms; à ce moment cloudBusy sera libéré.
-      if(cleaned){clearTimeout(cloudTimer);cloudTimer=setTimeout(()=>pushCloud(true),700)}
-    }
-    else{profile.cloudVersion=j.version||0;saveProfile()}
-  }catch(e){console.warn(e)}finally{cloudBusy=false}
+  if(cloudBusy||!profile.token||!profile.apiUrl)return;cloudBusy=true;updateSyncLine("Synchronisation…");
+  try{const j=await api("/api/state");state=mergeState(state,j.data||{});ensureHub();profile.cloudVersion=Number(j.version||0);profile.joinCode=j.joinCode||profile.joinCode;saveProfile();saveLocal();await loadMembers();queueOneSignal(false);render();updateSyncLine("Synchronisé ✓","ok")}
+  catch(e){updateSyncLine("Sync à vérifier","bad")}finally{cloudBusy=false}
 }
-async function pushCloud(force=false){
-  if(!profile.token||!apiBase()||cloudBusy)return;cloudBusy=true;
-  try{
-    const j=await api("/api/state",{method:"PUT",body:JSON.stringify({version:profile.cloudVersion||0,data:state})});profile.cloudVersion=j.version;saveProfile();$("#syncLine").textContent=`Synchronisé · ${profile.memberName||""}`;
-  }catch(e){
-    if(e.status===409&&e.data?.data){
-      state=mergeState(state,e.data.data);
-      applyCalendarFreshStart();
-      migrateLegacyPlanRetards();
-      migrateOct2026CombinedRemainders();
-      migrateMonthlyPlansToOperational();
-      applyCalendarFreshStart();
-      dedupeRecurringPayments();
-      profile.cloudVersion=e.data.version;saveProfile();localStorage.setItem(LS_KEY,JSON.stringify(state));cloudBusy=false;return pushCloud(true)
-    }
-    $("#syncLine").textContent="Sync à vérifier";console.warn(e)
-  }finally{cloudBusy=false}
+async function pushCloud(retry=false){
+  if(cloudBusy||!profile.token||!profile.apiUrl)return;cloudBusy=true;updateSyncLine("Envoi…");
+  try{const j=await api("/api/state",{method:"PUT",body:JSON.stringify({version:Number(profile.cloudVersion||0),data:state})});profile.cloudVersion=Number(j.version||profile.cloudVersion||0);saveProfile();updateSyncLine("Synchronisé ✓","ok")}
+  catch(e){if(e.status===409&&e.payload){state=mergeState(state,e.payload.data||{});profile.cloudVersion=Number(e.payload.version||0);saveProfile();saveLocal();cloudBusy=false;if(!retry)return pushCloud(true)}updateSyncLine("Sync à vérifier","bad")}
+  finally{cloudBusy=false}
+}
+async function loadMembers(){if(!profile.token||!profile.apiUrl)return;try{const j=await api("/api/members");members=Array.isArray(j.members)?j.members:[]}catch{members=[]}}
+function updateSyncLine(text,klass=""){const e=$("#syncLine");if(!e)return;if(text){e.textContent=text;e.className=`sync ${klass}`;return}if(profile.token&&profile.apiUrl){e.textContent="Liste familiale partagée";e.className="sync ok"}else{e.textContent="Mode local";e.className="sync"}}
+
+function bindSettings(){
+  $("#apiUrl")?.addEventListener("change",e=>{profile.apiUrl=e.target.value.trim();saveProfile()});
+  $("#memberName")?.addEventListener("change",e=>{profile.memberName=e.target.value.trim();saveProfile();render()});
+  $("#oneSignalId")?.addEventListener("change",e=>{profile.oneSignalAppId=e.target.value.trim();saveProfile()});
+  $("#pullNow")?.addEventListener("click",async()=>{await pullCloud();toast("Synchronisé 🔄")});
+  $("#disconnect")?.addEventListener("click",()=>{if(!confirm("Déconnecter ce téléphone de la liste partagée?"))return;profile.token="";profile.memberId="";profile.familyId="";profile.joinCode="";profile.cloudVersion=0;saveProfile();members=[];render();toast("Téléphone déconnecté")});
+  $("#createFamily")?.addEventListener("click",createFamily);
+  $("#joinFamily")?.addEventListener("click",joinFamily);
+  $("#enablePush")?.addEventListener("click",()=>queueOneSignal(true));
+  $("#testLocal")?.addEventListener("click",testLocalNotification);
+  $("#testServerWizz")?.addEventListener("click",()=>sendWizz(`⚡ Test WIZZ de ${myName()}`,"Si tu vois ceci, le WIZZ partagé fonctionne ✅"));
+  $("#exportHub")?.addEventListener("click",exportHub);
+  $("#importHub")?.addEventListener("click",()=>$("#importFile")?.click());
+  $("#importFile")?.addEventListener("change",e=>{const f=e.target.files?.[0];if(f)importHubFile(f);e.target.value=""});
+  $("#resetHub")?.addEventListener("click",()=>{if(!confirm("Vider toutes les tâches et jobs de N’OUBLIE RIEN? Les anciennes données Budget Pack ne seront pas touchées."))return;state[HUB_KEY]=defaultHub();saveState();toast("Nouvelle liste vidée")});
 }
 async function createFamily(){
-  profile.apiUrl=$("#apiUrl").value.trim();profile.memberName=$("#memberName").value.trim()||"Moi";if(!profile.apiUrl)return toast("Entre l'adresse du serveur");
-  try{const j=await api("/api/family/create",{method:"POST",body:JSON.stringify({familyName:state.settings.familyName||"Budget familial",memberName:profile.memberName,timezone:state.settings.timezone||"America/Toronto"})});Object.assign(profile,{token:j.token,memberId:j.memberId,familyId:j.familyId,joinCode:j.joinCode,cloudVersion:j.version||0});saveProfile();await pushCloud(true);await initOneSignal();render();toast(`Budget partagé créé · code ${j.joinCode}`)}catch(e){toast("Création impossible : "+e.message)}
+  profile.apiUrl=$("#apiUrl")?.value.trim()||profile.apiUrl;profile.memberName=$("#memberName")?.value.trim()||profile.memberName||"Moi";if(!profile.apiUrl)return toast("Entre l’adresse API");
+  try{const j=await api("/api/family/create",{method:"POST",body:JSON.stringify({familyName:"N’OUBLIE RIEN",memberName:profile.memberName,timezone:"America/Toronto"})});Object.assign(profile,{token:j.token,memberId:j.memberId,familyId:j.familyId,joinCode:j.joinCode,cloudVersion:Number(j.version||0)});saveProfile();await pushCloud(true);await loadMembers();queueOneSignal(true);render();toast(`Partage créé · code ${j.joinCode}`)}catch(e){toast("Création impossible : "+e.message)}
 }
 async function joinFamily(){
-  profile.apiUrl=$("#apiUrl").value.trim();profile.memberName=$("#memberName").value.trim()||"Membre";const code=$("#joinCode").value.trim().toUpperCase();if(!profile.apiUrl||!code)return toast("Adresse serveur + code requis");
-  try{const j=await api("/api/family/join",{method:"POST",body:JSON.stringify({joinCode:code,memberName:profile.memberName})});Object.assign(profile,{token:j.token,memberId:j.memberId,familyId:j.familyId,joinCode:j.joinCode,cloudVersion:0});saveProfile();await pullCloud();await initOneSignal();render();toast("Budget partagé rejoint ✅")}catch(e){toast("Impossible de rejoindre : "+e.message)}
+  profile.apiUrl=$("#apiUrl")?.value.trim()||profile.apiUrl;profile.memberName=$("#memberName")?.value.trim()||profile.memberName||"Membre";const code=$("#joinCode")?.value.trim().toUpperCase();if(!profile.apiUrl||!code)return toast("Adresse API + code requis");
+  try{const j=await api("/api/family/join",{method:"POST",body:JSON.stringify({joinCode:code,memberName:profile.memberName})});Object.assign(profile,{token:j.token,memberId:j.memberId,familyId:j.familyId,joinCode:j.joinCode,cloudVersion:0});saveProfile();await pullCloud();queueOneSignal(true);render();toast("Liste familiale rejointe ✅")}catch(e){toast("Impossible de rejoindre : "+e.message)}
 }
-function leaveCloud(){if(!confirm("Déconnecter ce téléphone du budget partagé? Les données locales restent ici."))return;profile={...profile,token:"",memberId:"",familyId:"",joinCode:"",cloudVersion:0};saveProfile();render();toast("Téléphone déconnecté")}
-async function initOneSignal(){
-  const appId=profile.oneSignalAppId;if(!appId)return;
+
+function queueOneSignal(requestPermission=false){
+  if(!profile.oneSignalAppId)profile.oneSignalAppId=DEFAULT_ONESIGNAL_APP_ID;saveProfile();
   window.OneSignalDeferred=window.OneSignalDeferred||[];
   window.OneSignalDeferred.push(async OneSignal=>{
     try{
-      if(!oneSignalReady){
-        const swUrl=new URL("push/onesignal/OneSignalSDKWorker.js",location.href), swPath=swUrl.pathname.replace(/^\//,""), swScope=swUrl.pathname.replace(/OneSignalSDKWorker\.js$/,"");
-        await OneSignal.init({appId,serviceWorkerPath:swPath,serviceWorkerParam:{scope:swScope}});
-        oneSignalReady=true;
-      }
-      // Important : refaire le lien avec le membre Budget Pack même si OneSignal
-      // était déjà initialisé (ex. téléphone activé avant de rejoindre le partage).
+      if(!oneSignalInitialized){await OneSignal.init({appId:profile.oneSignalAppId});oneSignalInitialized=true}
       if(profile.memberId)await OneSignal.login(profile.memberId);
-    }catch(e){console.warn("OneSignal",e)}
-  })
-}
-async function enablePush(){
-  profile.oneSignalAppId=$("#oneSignalAppId").value.trim();saveProfile();if(!profile.oneSignalAppId)return toast("Ajoute le OneSignal App ID");
-  await initOneSignal();window.OneSignalDeferred=window.OneSignalDeferred||[];window.OneSignalDeferred.push(async OneSignal=>{try{if(profile.memberId)await OneSignal.login(profile.memberId);await OneSignal.Notifications.requestPermission();if(profile.memberId)await OneSignal.login(profile.memberId);toast("Notifications activées et reliées 🔔")}catch(e){toast("Impossible d'activer les notifications")}})
-}
-
-// ----- settings / nav -----
-
-function ensureNegativeBalanceButton(){
-  const input=document.getElementById("startBalance");
-  if(!input || document.getElementById("startBalanceSignBtn")) return;
-  const wrap=document.createElement("div");
-  wrap.style.display="grid";
-  wrap.style.gridTemplateColumns="1fr 54px";
-  wrap.style.gap="8px";
-  wrap.style.alignItems="end";
-  input.parentNode.insertBefore(wrap,input);
-  wrap.appendChild(input);
-  const btn=document.createElement("button");
-  btn.type="button";
-  btn.id="startBalanceSignBtn";
-  btn.className="smallBtn";
-  btn.textContent="±";
-  btn.style.height="44px";
-  btn.style.marginTop="6px";
-  btn.onclick=()=>{
-    input.value=String(-Number(input.value||0));
-    input.dispatchEvent(new Event("change",{bubbles:true}));
-    input.focus();
-  };
-  wrap.appendChild(btn);
-}
-
-function ensureNightBalanceHomeButton(){
-  if(document.getElementById("nightBalanceHomeBtn"))return;
-  const balance=document.getElementById("budgetBalance");
-  if(!balance)return;
-  const host=balance.closest(".card")||balance.parentElement;
-  if(!host)return;
-  const btn=document.createElement("button");
-  btn.type="button";
-  btn.id="nightBalanceHomeBtn";
-  btn.className="fullBtn primary";
-  btn.style.marginTop="12px";
-  btn.textContent="🌙 Entrer le solde du soir";
-  btn.onclick=nightBalance;
-  host.appendChild(btn);
-}
-
-function ensureBudgetImportHomeButton(){
-  if(document.getElementById("budgetImportHomeBtn"))return;
-  const night=document.getElementById("nightBalanceHomeBtn");
-  if(!night||!night.parentNode)return;
-  const btn=document.createElement("button");
-  btn.type="button";
-  btn.id="budgetImportHomeBtn";
-  btn.className="fullBtn";
-  btn.style.marginTop="8px";
-  btn.textContent="📥 Importer un budget";
-  btn.onclick=openBudgetImport;
-  night.parentNode.appendChild(btn);
-}
-
-function ensureMonthlyPlanHomeButton(){
-  if(document.getElementById("monthlyPlanHomeBtn"))return;
-  const imp=document.getElementById("budgetImportHomeBtn");
-  if(!imp||!imp.parentNode)return;
-  const btn=document.createElement("button");
-  btn.type="button";
-  btn.id="monthlyPlanHomeBtn";
-  btn.className="fullBtn";
-  btn.style.marginTop="8px";
-  btn.textContent="📅 Voir budget du mois";
-  btn.onclick=openMonthlyPlan;
-  imp.parentNode.appendChild(btn);
-}
-
-function monthLabel(key){
-  const m=/^(\d{4})-(\d{2})$/.exec(String(key||""));
-  if(!m)return key||"Budget";
-  return new Date(Number(m[1]),Number(m[2])-1,1).toLocaleDateString("fr-CA",{month:"long",year:"numeric"});
-}
-function monthlyPlanKeys(){return Object.keys(state.monthlyPlans||{}).sort()}
-function nearestMonthlyPlanKey(){
-  const keys=monthlyPlanKeys();if(!keys.length)return null;
-  const cur=monthKey(today());
-  return keys.find(k=>k>=cur)||keys[keys.length-1];
-}
-function operationalBillForPlanItem(item){
-  return (state.bills||[]).find(b=>b.importedMonthlyPlan&&b.sourcePlanItemId===item.id&&!b.deletedAt)||null;
-}
-function operationalIncomeForPlanItem(item){
-  return (state.incomeSchedules||[]).find(x=>x.importedMonthlyPlan&&x.sourcePlanItemId===item.id&&!x.deletedAt)||null;
-}
-function openMonthlyPlan(key=null){
-  const keys=monthlyPlanKeys();
-  if(!keys.length){
-    openModal(`${modalHeader("📅 Budget du mois")}<div class="card"><strong>Aucun budget mensuel importé.</strong><div class="sub">Envoie-moi la photo du budget papier, puis colle ici le bloc que je te prépare avec le bouton « Importer un budget ».</div></div>`);
-    return;
-  }
-  key=key&&state.monthlyPlans?.[key]?key:nearestMonthlyPlanKey();
-  const plan=state.monthlyPlans[key]||{items:[]};
-  const items=(plan.items||[]).slice().sort((a,b)=>String(a.date||"").localeCompare(String(b.date||"")));
-  const income=items.filter(x=>x.kind==="income").reduce((a,x)=>a+Number(x.amount||0),0);
-  const expense=items.filter(x=>x.kind==="expense").reduce((a,x)=>a+Number(x.amount||0),0);
-  const carryover=items.filter(x=>x.kind==="carryover").reduce((a,x)=>a+Number(x.amount||0),0);
-  const options=keys.map(k=>`<option value="${esc(k)}" ${k===key?"selected":""}>${esc(monthLabel(k))}</option>`).join("");
-  const groups={};items.forEach(x=>(groups[x.date||`${key}-01`]=groups[x.date||`${key}-01`]||[]).push(x));
-  const rows=Object.entries(groups).map(([date,list])=>{
-    const body=list.map(x=>{
-      if(x.kind==="income"){
-        const sched=operationalIncomeForPlanItem(x),received=!!sched?.receivedAt;
-        return `<div class="historyRow"><div class="historyMain"><div class="historyTitle">💵 ${esc(x.name)}</div><div class="sub">${received?"✅ Reçue":"Prévue · enregistrée au calendrier"}</div></div><div class="amount ${received?"okText":""}">+${money(x.amount)}</div>${sched&&!received?`<div class="rowActions"><button onclick="BP.receiveIncome('${sched.id}','${x.date}')">✅</button></div>`:""}</div>`;
-      }
-      if(x.kind==="expense"){
-        const b=operationalBillForPlanItem(x),st=b?billStatus(b,x.date):{},paid=!!st.paidAt;
-        const actual=paid?Number(st.paidAmount??x.amount):Number(x.amount||0);
-        const changed=paid&&Math.abs(actual-Number(x.amount||0))>0.005;
-        const sub=paid
-          ? `${esc(x.category||"Dépense prévue")} · ✅ Payée${changed?` · prévu ${money(x.amount)} · réel ${money(actual)}`:""}`
-          : `${esc(x.category||"Dépense prévue")} · À payer · montant prévu ${money(x.amount)}`;
-        return `<div class="historyRow"><div class="historyMain"><div class="historyTitle">💸 ${esc(x.name)}</div><div class="sub">${sub}</div></div><div class="amount ${paid?"okText":""}">−${money(actual)}</div>${b&&!paid?`<div class="rowActions"><button onclick="BP.payBill('${b.id}','${x.date}')">✅</button></div>`:""}</div>`;
-      }
-      if(x.kind==="carryover")return `<div class="historyRow"><div class="historyMain"><div class="historyTitle">↩️ ${esc(x.label||x.name||"Retard reporté")}</div><div class="sub">Argent déjà manquant de la période précédente · pas un paiement</div></div><div class="amount">−${money(Math.abs(Number(x.amount||0)))}</div></div>`;
-      if(x.kind==="remaining")return `<div class="historyRow"><div class="historyMain"><div class="historyTitle">💰 ${esc(x.label||"Restant prévu")}</div><div class="sub">Repère du budget papier</div></div><div class="amount">${money(x.amount)}</div></div>`;
-      return `<div class="historyRow"><div class="historyMain"><div class="historyTitle">📝 ${esc(x.text||x.name||"Note")}</div><div class="sub">Note du budget</div></div></div>`;
-    }).join("");
-    return `<div class="card" style="margin-top:10px"><strong>${esc(fmtDate(date))}</strong>${body}</div>`;
-  }).join("")||`<div class="card muted">Aucune ligne dans ce budget.</div>`;
-  openModal(`${modalHeader("📅 Budget du mois")}
-    <label>Mois<select id="monthlyPlanSelect">${options}</select></label>
-    <div class="card"><div class="catTop"><span>Revenus prévus</span><strong>${money(income)}</strong></div><div class="catTop"><span>Dépenses prévues</span><strong>${money(expense)}</strong></div>${carryover?`<div class="catTop"><span>Retard reporté</span><strong>−${money(Math.abs(carryover))}</strong></div>`:""}<div class="catTop"><span>Écart prévu après retard</span><strong>${money(income-expense-carryover)}</strong></div><div class="sub" style="margin-top:6px">Les vraies dépenses du plan deviennent des paiements avec rappel et bouton ✅ Payé. Un « retard reporté » représente seulement de l'argent déjà manquant de la période précédente : il n'est jamais créé comme facture. Les paies prévues restent hors du solde jusqu'à ce que tu les marques reçues.</div></div>
-    ${rows}`);
-  const sel=document.getElementById("monthlyPlanSelect");if(sel)sel.onchange=e=>openMonthlyPlan(e.target.value);
-}
-
-function ensureBalanceTools(){
-  if(document.getElementById("balanceTools"))return;
-  const seed=document.getElementById("seedBtn");
-  if(!seed||!seed.parentNode)return;
-  const box=document.createElement("div");
-  box.id="balanceTools";
-  box.innerHTML=`
-    <button type="button" id="nightBalanceBtn" class="fullBtn primary" style="margin-bottom:10px">🌙 Solde du soir</button>
-    <button type="button" id="budgetImportBtn" class="fullBtn primary" style="margin-bottom:10px">📥 Importer un budget</button>
-    <button type="button" id="monthlyPlanBtn" class="fullBtn" style="margin-bottom:10px">📅 Voir budget du mois</button>
-    <button type="button" id="setCurrentBalanceBtn" class="fullBtn" style="margin-bottom:10px">💰 Définir le solde actuel</button>
-    <button type="button" id="restartBudgetBtn" class="fullBtn" style="margin-bottom:10px">🔄 Repartir le budget à zéro</button>`;
-  seed.parentNode.insertBefore(box,seed);
-  document.getElementById("nightBalanceBtn").onclick=nightBalance;
-  document.getElementById("budgetImportBtn").onclick=openBudgetImport;
-  document.getElementById("monthlyPlanBtn").onclick=()=>openMonthlyPlan();
-  document.getElementById("setCurrentBalanceBtn").onclick=setCurrentBalance;
-  document.getElementById("restartBudgetBtn").onclick=restartBudget;
-}
-
-function todayMoneySummary(date=today()){
-  const expenses=(state.transactions||[]).filter(t=>t.kind==="expense"&&t.date===date).reduce((s,t)=>s+Number(t.amount||0),0);
-  const incomes=(state.transactions||[]).filter(t=>t.kind==="income"&&t.date===date).reduce((s,t)=>s+Number(t.amount||0),0);
-  let bills=0;
-  (state.bills||[]).forEach(b=>Object.values(b.statuses||{}).forEach(st=>{
-    if((st.paidAt||"").slice(0,10)===date)bills+=Number(st.paidAmount??b.amount??0);
-  }));
-  return {expenses,incomes,bills};
-}
-
-function nightBalance(){
-  const expected=Number(currentBalance().toFixed(2));
-  const value=prompt(`🌙 SOLDE DU SOIR\n\nQuel est le solde exact dans ton compte présentement?\n\nSolde calculé par l'app : ${money(expected)}\nTu peux écrire un montant négatif, exemple : -250`,String(expected));
-  if(value===null)return;
-  const normalized=String(value).trim().replace(/\s/g,"").replace(",",".").replace("$","");
-  const actual=Number(normalized);
-  if(!Number.isFinite(actual))return toast("Entre un montant valide");
-
-  const diff=Number((expected-actual).toFixed(2));
-  const info=todayMoneySummary();
-
-  if(Math.abs(diff)<0.01){
-    toast("Solde déjà à jour ✅");
-    return;
-  }
-
-  if(diff>0){
-    const ok=confirm(`🌙 RÉSUMÉ DU JOUR\n\nSolde calculé : ${money(expected)}\nSolde réel : ${money(actual)}\n\nDépenses déjà entrées : ${money(info.expenses)}\nFactures marquées payées : ${money(info.bills)}\nRevenus entrés : ${money(info.incomes)}\n\n👉 Dépenses non entrées détectées : ${money(diff)}\n\nAjouter automatiquement ${money(diff)} dans l'historique comme « Dépenses du jour » ?`);
-    if(!ok)return;
-    state.transactions.unshift({
-      id:uid("tx"),kind:"expense",amount:diff,merchant:"Dépenses du jour (solde du soir)",category:"Autre",date:today(),needFun:"",memberName:profile.memberName||"Moi",
-      note:`Ajustement automatique du solde du soir. Solde prévu ${money(expected)} → solde réel ${money(actual)}.`,createdAt:nowIso(),updatedAt:nowIso()
-    });
-    saveState();
-    toast(`Solde du soir enregistré · ${money(diff)} de dépenses ✅`);
-    return;
-  }
-
-  const gain=Math.abs(diff);
-  const ok=confirm(`🌙 SOLDE PLUS HAUT QUE PRÉVU\n\nSolde calculé : ${money(expected)}\nSolde réel : ${money(actual)}\n\nIl y a ${money(gain)} de plus que prévu. Ça peut être une paie, un remboursement ou un dépôt non entré.\n\nAjouter ${money(gain)} comme ajustement de revenu pour remettre le budget au bon solde ?`);
-  if(!ok)return;
-  state.transactions.unshift({
-    id:uid("tx"),kind:"income",amount:gain,name:"Ajustement solde du soir",date:today(),memberName:profile.memberName||"Moi",
-    note:`Ajustement automatique du solde du soir. Solde prévu ${money(expected)} → solde réel ${money(actual)}.`,createdAt:nowIso(),updatedAt:nowIso()
-  });
-  saveState();
-  toast(`Solde du soir ajusté de +${money(gain)} ✅`);
-}
-
-
-
-// ----- Correction anciens plans : « Retard » = déficit reporté, jamais une facture -----
-function migrateLegacyPlanRetards(){
-  let changed=false;
-  state.monthlyPlans=state.monthlyPlans||{};
-  Object.values(state.monthlyPlans).forEach(plan=>{
-    (plan?.items||[]).forEach(item=>{
-      if(item?.kind!=="expense"||!isPlanCarryoverName(item.name))return;
-      item.kind="carryover";
-      item.label=item.label||item.name||"Retard reporté";
-      delete item.category;
-      item.updatedAt=nowIso();
-      (state.bills||[]).forEach(b=>{
-        if(!b.importedMonthlyPlan||b.sourcePlanItemId!==item.id||b.deletedAt)return;
-        const paid=Object.values(b.statuses||{}).some(st=>st?.paidAt);
-        if(!paid){b.active=false;b.deletedAt=nowIso();b.updatedAt=nowIso()}
-      });
-      changed=true;
-    });
-  });
-  if(changed){state.updatedAt=nowIso();localStorage.setItem(LS_KEY,JSON.stringify(state))}
-  return changed;
-}
-
-// ----- Correction du plan du 1er octobre 2026 -----
-// Sur la feuille papier : Frank finit à +60 $, Mari finit à -217 $ (arrondi à -220 $),
-// puis le restant familial est d'environ -160 $. Le 220 $ n'est PAS une dépense à payer.
-function migrateOct2026CombinedRemainders(){
-  const plan=state.monthlyPlans?.["2026-10"];
-  if(!plan?.items?.length)return false;
-  const items=plan.items;
-  let changed=false;
-
-  const sameDay=x=>x?.date==="2026-10-01";
-  const norm=x=>importName(x||"");
-  const approx=(a,b)=>Math.abs(Number(a||0)-Number(b||0))<0.01;
-  const isMistaken220=x=>sameDay(x)&&x.kind==="expense"&&approx(x.amount,220)&&(
-    norm(x.name).includes("depense a identifier") ||
-    norm(x.name).includes("depense a id") ||
-    norm(x.name)==="depense"
-  );
-
-  // Le 220 $ de la feuille n'était pas une dépense : c'était l'arrondi du -217 $ de Mari.
-  // On retire toutes les anciennes versions de ce faux paiement et leur rappel opérationnel.
-  const bad220=items.filter(isMistaken220);
-  bad220.forEach(item=>{
-    (state.bills||[]).forEach(b=>{
-      if(!b.importedMonthlyPlan||b.sourcePlanItemId!==item.id||b.deletedAt)return;
-      const paid=Object.values(b.statuses||{}).some(st=>st?.paidAt);
-      if(!paid){b.active=false;b.deletedAt=nowIso();b.updatedAt=nowIso()}
-    });
-  });
-  if(bad220.length){
-    plan.items=plan.items.filter(x=>!bad220.includes(x));
-    changed=true;
-  }
-
-  let list=plan.items;
-
-  // Corrige les vieux libellés sans transformer à répétition les bons repères.
-  list.forEach(x=>{
-    if(!sameDay(x)||x.kind!=="remaining")return;
-    const label=norm(x.label);
-    if(label.includes("restant frank")&&approx(x.amount,-160)){
-      x.label="Restant familial (arrondi feuille)";x.updatedAt=nowIso();changed=true;
-    }
-    if(label.includes("restant mari")&&approx(x.amount,-160)){
-      x.label="Restant familial (arrondi feuille)";x.updatedAt=nowIso();changed=true;
-    }
-  });
-
-  const canonicalKind=x=>{
-    if(!sameDay(x)||x.kind!=="remaining")return null;
-    const label=norm(x.label);
-    if(label.includes("restant frank")&&approx(x.amount,60))return "frank";
-    if(label.includes("restant mari")&&approx(x.amount,-217))return "mari";
-    if(label.includes("restant familial")&&approx(x.amount,-160))return "family";
-    return null;
-  };
-
-  // Supprime les doublons créés par l'ancienne migration (un seul Frank, Mari et familial).
-  const seen=new Set();
-  const cleaned=[];
-  list.forEach(x=>{
-    const k=canonicalKind(x);
-    if(k&&seen.has(k)){changed=true;return}
-    if(k)seen.add(k);
-    cleaned.push(x);
-  });
-  if(cleaned.length!==list.length)plan.items=cleaned;
-  list=plan.items;
-
-  const maxOtherLine=Math.max(0,...list.filter(x=>sameDay(x)&&!canonicalKind(x)).map((x,i)=>Number(x.line||i+1)));
-  const ensureMarker=(kind,amount,label,line)=>{
-    let item=list.find(x=>canonicalKind(x)===kind);
-    if(!item){
-      item={id:uid("plan"),type:"plan",kind:"remaining",date:"2026-10-01",amount,label,line,createdAt:nowIso(),updatedAt:nowIso()};
-      list.push(item);changed=true;
-    }
-    const before=JSON.stringify([item.type,item.kind,item.date,item.amount,item.label,item.line]);
-    Object.assign(item,{type:"plan",kind:"remaining",date:"2026-10-01",amount,label,line});
-    const after=JSON.stringify([item.type,item.kind,item.date,item.amount,item.label,item.line]);
-    if(before!==after){item.updatedAt=nowIso();changed=true}
-    return item;
-  };
-
-  ensureMarker("frank",60,"Restant Frank",maxOtherLine+1);
-  ensureMarker("mari",-217,"Restant Mari",maxOtherLine+2);
-  ensureMarker("family",-160,"Restant familial (arrondi feuille)",maxOtherLine+3);
-
-  if(changed){
-    plan.updatedAt=nowIso();
-    state.updatedAt=nowIso();
-    localStorage.setItem(LS_KEY,JSON.stringify(state));
-  }
-  return changed;
-}
-
-function octRemainderDuplicateCount(){
-  const items=state.monthlyPlans?.["2026-10"]?.items||[];
-  const norm=v=>importName(v||"");
-  return items.filter(x=>x?.date==="2026-10-01"&&x.kind==="remaining"&&norm(x.label).includes("restant familial")&&Math.abs(Number(x.amount||0)+160)<0.01).length;
-}
-function cleanupOctRemaindersNow(){
-  const before=octRemainderDuplicateCount();
-  const changed=migrateOct2026CombinedRemainders();
-  const after=octRemainderDuplicateCount();
-  if(changed){saveState();toast(`Nettoyage fait ✅ ${before} → ${after} restant familial`)}
-  else toast(`Déjà propre ✅ ${after} restant familial`);
-}
-function ensureOctCleanupButton(){
-  const existing=document.getElementById("cleanupOctRemaindersBtn");
-  const count=octRemainderDuplicateCount();
-  if(count<=1){if(existing)existing.remove();return}
-  if(existing){existing.textContent=`🧹 Nettoyer les doublons -160 $ (${count})`;return}
-  const seed=document.getElementById("seedBtn");if(!seed||!seed.parentNode)return;
-  const btn=document.createElement("button");
-  btn.type="button";btn.id="cleanupOctRemaindersBtn";btn.className="fullBtn primary";
-  btn.style.marginBottom="10px";btn.textContent=`🧹 Nettoyer les doublons -160 $ (${count})`;
-  btn.onclick=cleanupOctRemaindersNow;
-  seed.parentNode.insertBefore(btn,seed);
-}
-
-// ----- Liaison automatique Budget du mois -> factures / paies -----
-function nextMonthStart(key){
-  const m=/^(\d{4})-(\d{2})$/.exec(String(key||""));if(!m)return null;
-  const d=new Date(Number(m[1]),Number(m[2]),1);return isoDate(d);
-}
-function clearMonthlyPlanCoverage(month){
-  let changed=false;
-  (state.bills||[]).forEach(b=>{
-    Object.keys(b.statuses||{}).forEach(due=>{
-      const st=b.statuses[due];
-      if(st?.coveredByMonthlyPlan===month){
-        const copy={...st};
-        if(copy.planSnoozedUntil&&copy.snoozedUntil===copy.planSnoozedUntil)delete copy.snoozedUntil;
-        delete copy.planSnoozedUntil;delete copy.coveredByMonthlyPlan;delete copy.coveredByPlanItemId;
-        if(!Object.keys(copy).length)delete b.statuses[due];else b.statuses[due]=copy;
-        b.updatedAt=nowIso();changed=true;
-      }
-    });
-  });
-  (state.incomeSchedules||[]).forEach(x=>{
-    if(!x.coveredDates)return;
-    Object.keys(x.coveredDates).forEach(date=>{if(x.coveredDates[date]===month){delete x.coveredDates[date];x.updatedAt=nowIso();changed=true}});
-  });
-  return changed;
-}
-function coverRecurringTemplateForPlanItem(item,month){
-  const planName=importName(item.name);
-  const templates=(state.bills||[]).filter(b=>{
-    if(b.deletedAt||b.importedMonthlyPlan||b.frequency==="one")return false;
-    const billName=importName(b.name);
-    if(!billName||!planName)return false;
-    return billName===planName || planName.includes(billName) || billName.includes(planName);
-  });
-  if(!templates.length)return false;
-  let changed=false;
-  templates.forEach(template=>{
-    let due="";
-    if(template.frequency==="monthly")due=monthlyDate(Number(month.slice(0,4)),Number(month.slice(5,7)),template.dueDay||1);
-    else if(template.frequency==="weekly")due=item.date;
-    if(!due)return;
-    template.statuses=template.statuses||{};
-    const old=template.statuses[due]||{}, until=nextMonthStart(month);
-    if(old.coveredByMonthlyPlan===month&&old.coveredByPlanItemId===item.id&&old.planSnoozedUntil===until)return;
-    template.statuses[due]={...old,coveredByMonthlyPlan:month,coveredByPlanItemId:item.id,planSnoozedUntil:until,snoozedUntil:old.snoozedUntil&&old.snoozedUntil>until?old.snoozedUntil:until,updatedAt:nowIso()};
-    template.updatedAt=nowIso();
-    changed=true;
-  });
-  return changed;
-}
-function coverRecurringIncomeForPlanItem(item,month){
-  const candidates=(state.incomeSchedules||[]).filter(x=>!x.deletedAt&&!x.importedMonthlyPlan&&x.active!==false&&x.frequency!=="one");
-  const matches=candidates.filter(x=>incomeOccurrences(x,item.date,item.date).includes(item.date));
-  if(!matches.length)return false;
-  const exact=matches.find(x=>Math.abs(Number(x.amount||0)-Number(item.amount||0))<0.005&&x.amount!=null);
-  const generic=matches.find(x=>x.amount==null);
-  const sched=exact||generic||matches.find(x=>importName(x.name)===importName(item.name));
-  if(!sched)return false;
-  sched.coveredDates=sched.coveredDates||{};
-  if(sched.coveredDates[item.date]===month)return false;
-  sched.coveredDates[item.date]=month;sched.updatedAt=nowIso();return true;
-}
-function removeUnfinishedOperationalForPlanMonth(month){
-  let changed=false;
-  (state.bills||[]).forEach(b=>{
-    if(!b.importedMonthlyPlan||b.sourcePlanMonth!==month||b.deletedAt)return;
-    const hasPaid=Object.values(b.statuses||{}).some(st=>st?.paidAt);
-    if(!hasPaid){b.active=false;b.deletedAt=nowIso();b.updatedAt=nowIso();changed=true}
-  });
-  (state.incomeSchedules||[]).forEach(x=>{
-    if(!x.importedMonthlyPlan||x.sourcePlanMonth!==month||x.deletedAt)return;
-    if(!x.receivedAt){x.active=false;x.deletedAt=nowIso();x.updatedAt=nowIso();changed=true}
-  });
-  if(clearMonthlyPlanCoverage(month))changed=true;
-  return changed;
-}
-function syncMonthlyPlanToOperational(month){
-  const plan=state.monthlyPlans?.[month];if(!plan)return 0;
-  state.bills=state.bills||[];state.incomeSchedules=state.incomeSchedules||[];
-  let changed=0;
-  (plan.items||[]).forEach(item=>{
-    if(item.kind==="expense"){
-      let b=(state.bills||[]).find(x=>x.importedMonthlyPlan&&x.sourcePlanItemId===item.id&&!x.deletedAt);
-      if(!b){
-        b={id:uid("bill"),name:item.name||"Dépense prévue",amount:Number(item.amount||0),dueDay:Number(String(item.date).slice(8,10))||1,dueDate:item.date,startDate:item.date,category:item.category||"Autre",frequency:"one",variable:false,autopay:false,active:true,statuses:{},activeFrom:item.date,importedMonthlyPlan:true,sourcePlanMonth:month,sourcePlanItemId:item.id,createdAt:nowIso(),updatedAt:nowIso()};
-        state.bills.push(b);changed++;
-      }else{
-        const before=JSON.stringify([b.name,b.amount,b.dueDate,b.category,b.active]);
-        Object.assign(b,{name:item.name||b.name,amount:Number(item.amount||0),dueDay:Number(String(item.date).slice(8,10))||1,dueDate:item.date,startDate:item.date,category:item.category||"Autre",frequency:"one",active:true,activeFrom:item.date,updatedAt:nowIso()});
-        if(before!==JSON.stringify([b.name,b.amount,b.dueDate,b.category,b.active]))changed++;
-      }
-      if(coverRecurringTemplateForPlanItem(item,month))changed++;
-    }else if(item.kind==="income"){
-      let inc=(state.incomeSchedules||[]).find(x=>x.importedMonthlyPlan&&x.sourcePlanItemId===item.id&&!x.deletedAt);
-      if(!inc){
-        state.incomeSchedules.push({id:uid("inc"),name:item.name||"Revenu prévu",frequency:"one",dueDate:item.date,amount:Number(item.amount||0),active:true,importedMonthlyPlan:true,sourcePlanMonth:month,sourcePlanItemId:item.id,createdAt:nowIso(),updatedAt:nowIso()});changed++;
-      }else{
-        const before=JSON.stringify([inc.name,inc.amount,inc.dueDate,inc.frequency,inc.active]);
-        inc.name=item.name||inc.name;inc.amount=Number(item.amount||0);inc.dueDate=item.date;inc.frequency="one";inc.active=!inc.receivedAt;
-        const after=JSON.stringify([inc.name,inc.amount,inc.dueDate,inc.frequency,inc.active]);
-        if(before!==after){inc.updatedAt=nowIso();changed++}
-      }
-      if(coverRecurringIncomeForPlanItem(item,month))changed++;
-    }
-  });
-  plan.operationalLinkedAt=nowIso();plan.updatedAt=nowIso();
-  return changed;
-}
-function migrateMonthlyPlansToOperational(){
-  let changed=0;
-  state.monthlyPlans=state.monthlyPlans||{};
-  Object.keys(state.monthlyPlans).forEach(month=>{changed+=syncMonthlyPlanToOperational(month)});
-  if(changed){state.updatedAt=nowIso();localStorage.setItem(LS_KEY,JSON.stringify(state))}
-  return changed;
-}
-function receiveIncome(id,date){
-  const sched=(state.incomeSchedules||[]).find(x=>x.id===id);if(!sched)return;
-  if(sched.receivedAt)return toast("Paie déjà reçue ✅");
-  const suggested=Number(sched.amount||0);
-  const raw=prompt(`Montant reçu pour ${sched.name}`,String(suggested));if(raw===null)return;
-  const amount=importTextMoney(raw);if(!Number.isFinite(amount)||amount<0)return toast("Entre un montant valide");
-  const exists=(state.transactions||[]).some(t=>t.kind==="income"&&t.sourceIncomeScheduleId===sched.id);
-  if(!exists)state.transactions.unshift({id:uid("tx"),kind:"income",amount,date:date||sched.dueDate||today(),name:sched.name,memberName:profile.memberName||"Moi",note:"Paie reçue depuis le budget du mois",sourceIncomeScheduleId:sched.id,createdAt:nowIso(),updatedAt:nowIso()});
-  sched.receivedAt=nowIso();sched.receivedAmount=amount;sched.active=false;sched.updatedAt=nowIso();saveState();toast("Paie marquée reçue 💵");
-}
-
-// ----- Import budget depuis ChatGPT / photo mise au propre -----
-function importTextMoney(v){
-  const s=String(v??"").trim().replace(/\s/g,"").replace(/\$/g,"").replace(",",".");
-  const n=Number(s);return Number.isFinite(n)?n:NaN;
-}
-function importKey(v){
-  return String(v??"").trim().normalize("NFD").replace(/[\u0300-\u036f]/g,"").toUpperCase().replace(/[\s-]+/g,"_");
-}
-function importName(v){
-  return String(v??"").trim().normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase().replace(/\s+/g," ");
-}
-function isPlanCarryoverName(v){
-  const n=importName(v).replace(/[._-]+/g," ").replace(/\s+/g," ").trim();
-  return n==="retard"||n==="retard reporte"||n==="deficit reporte"||n==="report de retard";
-}
-function validImportDate(v){return /^\d{4}-\d{2}-\d{2}$/.test(String(v||""))}
-function findBillByImportName(name){return (state.bills||[]).find(b=>!b.deletedAt&&importName(b.name)===importName(name))||null}
-function transactionLooksDuplicate(item){
-  return (state.transactions||[]).some(t=>{
-    if(t.kind!==item.kind||t.date!==item.date||Math.abs(Number(t.amount||0)-Number(item.amount||0))>0.005)return false;
-    const a=item.kind==="expense"?(t.merchant||""):(t.name||"");
-    const b=item.kind==="expense"?(item.merchant||""):(item.name||"");
-    return importName(a)===importName(b);
+      if(requestPermission)await OneSignal.Notifications.requestPermission();
+      if(requestPermission)toast("Téléphone relié aux notifications 🔔")
+    }catch(e){if(requestPermission)toast("Impossible d’activer les notifications")}
   });
 }
-function parseBudgetImport(text){
-  const lines=String(text||"").split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
-  const out={date:today(),items:[],warnings:[],errors:[],planMonth:null};
-  lines.forEach((line,idx)=>{
-    if(line.startsWith("#")||line.startsWith("//"))return;
-    const p=line.split("|").map(x=>x.trim()), type=importKey(p[0]);
-    if(type==="BUDGETMOIS"||type==="BUDGET_MOIS"){
-      if(/^\d{4}-\d{2}$/.test(p[1]||""))out.planMonth=p[1];
-      else out.errors.push(`Ligne ${idx+1}: mois invalide. Utilise AAAA-MM.`);
-      return;
-    }
-    if(type==="BUDGETPACK"||type==="BUDGET_PACK"){
-      if(p[1]&&validImportDate(p[1]))out.date=p[1];
-      else if(p[1])out.warnings.push(`Ligne ${idx+1}: date d'en-tête ignorée.`);
-      return;
-    }
-    if(type==="PLAN_REVENU"){
-      const date=p[1],name=p[2]||"Revenu prévu",amount=importTextMoney(p[3]);
-      if(!validImportDate(date)||!Number.isFinite(amount)||amount<0)out.errors.push(`Ligne ${idx+1}: revenu prévu invalide.`);
-      else out.items.push({type:"plan",kind:"income",date,name,amount,line:idx+1});
-      return;
-    }
-    if(type==="PLAN_RETARD"||type==="PLAN_REPORT"||type==="PLAN_DEFICIT"||type==="PLAN_DÉFICIT"){
-      const date=p[1],amount=importTextMoney(p[2]),label=p[3]||"Retard reporté";
-      if(!validImportDate(date)||!Number.isFinite(amount)||amount<0)out.errors.push(`Ligne ${idx+1}: retard reporté invalide.`);
-      else out.items.push({type:"plan",kind:"carryover",date,amount,label,line:idx+1});
-      return;
-    }
-    if(type==="PLAN_DEPENSE"||type==="PLAN_DÉPENSE"){
-      const date=p[1],name=p[2]||"Dépense prévue",amount=importTextMoney(p[3]),category=p[4]||"Autre";
-      if(!validImportDate(date)||!Number.isFinite(amount)||amount<0)out.errors.push(`Ligne ${idx+1}: dépense prévue invalide.`);
-      else if(isPlanCarryoverName(name))out.items.push({type:"plan",kind:"carryover",date,amount,label:name||"Retard reporté",line:idx+1});
-      else out.items.push({type:"plan",kind:"expense",date,name,amount,category,line:idx+1});
-      return;
-    }
-    if(type==="PLAN_RESTANT"||type==="PLAN_SOLDE"){
-      const date=p[1],amount=importTextMoney(p[2]),label=p[3]||"Restant prévu";
-      if(!validImportDate(date)||!Number.isFinite(amount))out.errors.push(`Ligne ${idx+1}: restant prévu invalide.`);
-      else out.items.push({type:"plan",kind:"remaining",date,amount,label,line:idx+1});
-      return;
-    }
-    if(type==="PLAN_NOTE"){
-      const date=p[1],text=p.slice(2).join(" | ").trim();
-      if(!validImportDate(date)||!text)out.errors.push(`Ligne ${idx+1}: note prévue invalide.`);
-      else out.items.push({type:"plan",kind:"note",date,text,line:idx+1});
-      return;
-    }
-    if(type==="SOLDE"){
-      const amount=importTextMoney(p[1]);
-      if(!Number.isFinite(amount))out.errors.push(`Ligne ${idx+1}: solde invalide.`);
-      else out.items.push({type:"balance",amount,line:idx+1});
-      return;
-    }
-    if(type==="REVENU"||type==="PAIE"){
-      const name=p[1]||"Revenu", amount=importTextMoney(p[2]), date=validImportDate(p[3])?p[3]:out.date;
-      if(!Number.isFinite(amount)||amount<0)out.errors.push(`Ligne ${idx+1}: revenu invalide.`);
-      else out.items.push({type:"income",kind:"income",name,amount,date,line:idx+1});
-      return;
-    }
-    if(type==="DEPENSE"||type==="DÉPENSE"){
-      const category=p[1]||"Autre", merchant=p[2]||category||"Dépense", amount=importTextMoney(p[3]), date=validImportDate(p[4])?p[4]:out.date;
-      if(!Number.isFinite(amount)||amount<0)out.errors.push(`Ligne ${idx+1}: dépense invalide.`);
-      else out.items.push({type:"expense",kind:"expense",category,merchant,amount,date,line:idx+1});
-      return;
-    }
-    if(type==="FACTURE"){
-      const name=p[1], amount=importTextMoney(p[2]), rawDue=p[3]||"1", frequency=importKey(p[4]||"monthly").toLowerCase();
-      if(!name||!Number.isFinite(amount)||amount<0){out.errors.push(`Ligne ${idx+1}: facture invalide.`);return}
-      const dueDate=validImportDate(rawDue)?rawDue:"";
-      const dueDay=dueDate?Number(dueDate.slice(8,10)):Math.max(1,Math.min(31,Number(rawDue)||1));
-      const freq=["monthly","weekly","one"].includes(frequency)?frequency:(dueDate?"one":"monthly");
-      out.items.push({type:"bill",name,amount,dueDay,dueDate,frequency:freq,line:idx+1});
-      return;
-    }
-    if(type==="FACTURE_PAYEE"||type==="FACTURE_PAYÉE"||type==="PAIEMENT_FACTURE"){
-      const name=p[1], amount=importTextMoney(p[2]), paidDate=validImportDate(p[3])?p[3]:out.date, dueDate=validImportDate(p[4])?p[4]:paidDate;
-      if(!name||!Number.isFinite(amount)||amount<0)out.errors.push(`Ligne ${idx+1}: facture payée invalide.`);
-      else out.items.push({type:"paidBill",name,amount,date:paidDate,dueDate,line:idx+1});
-      return;
-    }
-    out.warnings.push(`Ligne ${idx+1} ignorée: ${p[0]||"inconnue"}.`);
-  });
-  const plans=out.items.filter(x=>x.type==="plan");
-  if(plans.length&&!out.planMonth)out.errors.push("Ajoute BUDGETMOIS|AAAA-MM au début du budget mensuel.");
-  if(!out.items.length&&!out.errors.length)out.errors.push("Aucune donnée reconnue à importer.");
-  return out;
-}
-function budgetImportItemStatus(item){
-  if(item.type==="plan"&&item.kind==="expense")return "Sera créée automatiquement comme paiement à la bonne date";
-  if(item.type==="plan"&&item.kind==="income")return "Sera ajoutée au calendrier; tu la confirmeras reçue";
-  if(item.type==="plan"&&item.kind==="carryover")return "Retard reporté seulement — aucun paiement ni rappel ne sera créé";
-  if(item.type==="plan")return "Repère du budget mensuel";
-  if(item.type==="income"||item.type==="expense")return transactionLooksDuplicate(item)?"Déjà présente — ignorée":"Sera ajoutée";
-  if(item.type==="balance")return `Solde final sera ajusté à ${money(item.amount)}`;
-  if(item.type==="bill")return findBillByImportName(item.name)?"Facture existante — sera mise à jour":"Nouvelle facture — sera ajoutée";
-  if(item.type==="paidBill"){
-    const b=findBillByImportName(item.name), st=b?.statuses?.[item.dueDate];
-    return st?.paidAt?"Déjà marquée payée — ignorée":(b?"Facture existante — sera marquée payée":"Facture absente — sera créée puis marquée payée");
-  }
-  return "Prête";
-}
-function budgetImportItemHtml(item){
-  let title="",sub="";
-  if(item.type==="plan"&&item.kind==="income"){title=`📅 💵 ${esc(item.name)} · +${money(item.amount)}`;sub=`Prévu · ${esc(fmtDate(item.date))}`}
-  else if(item.type==="plan"&&item.kind==="expense"){title=`📅 💸 ${esc(item.name)} · −${money(item.amount)}`;sub=`${esc(item.category||"Autre")} · ${esc(fmtDate(item.date))}`}
-  else if(item.type==="plan"&&item.kind==="carryover"){title=`📅 ↩️ ${esc(item.label||"Retard reporté")} · −${money(Math.abs(Number(item.amount||0)))}`;sub=`Déficit de la période précédente · ${esc(fmtDate(item.date))}`}
-  else if(item.type==="plan"&&item.kind==="remaining"){title=`📅 💰 ${esc(item.label||"Restant prévu")} · ${money(item.amount)}`;sub=`Repère · ${esc(fmtDate(item.date))}`}
-  else if(item.type==="plan"&&item.kind==="note"){title=`📅 📝 ${esc(item.text)}`;sub=`Note · ${esc(fmtDate(item.date))}`}
-  else if(item.type==="income"){title=`💵 ${esc(item.name)} · +${money(item.amount)}`;sub=fmtDate(item.date)}
-  else if(item.type==="expense"){title=`💸 ${esc(item.merchant)} · −${money(item.amount)}`;sub=`${esc(item.category)} · ${fmtDate(item.date)}`}
-  else if(item.type==="balance"){title=`💰 Solde final · ${money(item.amount)}`;sub="Ajustement appliqué après le reste"}
-  else if(item.type==="bill"){title=`🧾 ${esc(item.name)} · ${money(item.amount)}`;sub=`${item.frequency==="monthly"?`Mensuelle · jour ${item.dueDay}`:item.frequency==="weekly"?"Hebdomadaire":`Une fois${item.dueDate?` · ${esc(item.dueDate)}`:""}`}`}
-  else if(item.type==="paidBill"){title=`✅ ${esc(item.name)} · ${money(item.amount)}`;sub=`Payée le ${esc(item.date)}`}
-  return `<div class="card" style="margin-top:8px"><strong>${title}</strong><div class="sub">${sub}</div><div class="sub">${esc(budgetImportItemStatus(item))}</div></div>`;
-}
-function openBudgetImport(){
-  openModal(`${modalHeader("📥 Importer un budget")}<form id="budgetImportForm">
-    <p class="muted small">Colle ici le bloc que ChatGPT t'a préparé après la photo. Après confirmation, les vraies dépenses du BUDGETMOIS deviennent automatiquement des paiements avec la bonne date, rappel et bouton ✅ Payé. Les lignes « Retard » sont gardées comme déficit reporté seulement : aucun paiement n'est créé. Les paies prévues vont au calendrier et n'augmentent le solde qu'une fois marquées reçues.</p>
-    <label>Budget à importer<textarea id="budgetImportText" rows="12" style="width:100%;min-height:220px" placeholder="BUDGETMOIS|2026-10\nPLAN_REVENU|2026-10-01|Ma paie|760\nPLAN_DEPENSE|2026-10-01|Épicerie|300|Épicerie\nPLAN_RESTANT|2026-10-01|-160|Restant prévu\nPLAN_NOTE|2026-10-13|Prévoir argent pour le permis"></textarea></label>
-    <button class="fullBtn primary" type="submit">🔎 Vérifier avant d'importer</button>
-    <div id="budgetImportPreview" style="margin-top:12px"></div>
-  </form>`);
-  document.getElementById("budgetImportForm").onsubmit=e=>{
-    e.preventDefault();
-    const parsed=parseBudgetImport(document.getElementById("budgetImportText").value);
-    renderBudgetImportPreview(parsed);
-  };
-}
-function renderBudgetImportPreview(parsed){
-  const host=document.getElementById("budgetImportPreview");if(!host)return;
-  const errs=parsed.errors.length?`<div class="card"><strong class="dangerText">⚠️ À corriger</strong><div class="sub">${parsed.errors.map(esc).join("<br>")}</div></div>`:"";
-  const warns=parsed.warnings.length?`<div class="card"><strong class="warnText">À vérifier</strong><div class="sub">${parsed.warnings.map(esc).join("<br>")}</div></div>`:"";
-  const items=parsed.items.map(budgetImportItemHtml).join("");
-  const dup=parsed.items.filter(x=>(x.type==="income"||x.type==="expense")&&transactionLooksDuplicate(x)).length;
-  const planCount=parsed.items.filter(x=>x.type==="plan").length;
-  const planMsg=planCount&&parsed.planMonth?`<div class="card"><strong>📅 ${esc(monthLabel(parsed.planMonth))}</strong><div class="sub">${planCount} ligne(s) de prévision. ${state.monthlyPlans?.[parsed.planMonth]?"Le plan déjà enregistré pour ce mois sera remplacé.":"Un nouveau plan mensuel sera créé."} Les dépenses seront aussi créées comme paiements datés; elles ne réduisent le solde que lorsque tu les marques payées.</div></div>`:"";
-  host.innerHTML=`${errs}${warns}${planMsg}<div class="card"><strong>Aperçu</strong><div class="sub">${parsed.items.length} élément(s) reconnu(s)${dup?` · ${dup} doublon(s) seront ignorés`:""}. Aucune donnée existante ne sera supprimée, sauf qu'un BUDGETMOIS remplace uniquement le plan du même mois.</div></div>${items}${parsed.errors.length?"":`<button type="button" id="confirmBudgetImportBtn" class="fullBtn primary" style="margin-top:12px">✅ Confirmer l'import</button>`}`;
-  const btn=document.getElementById("confirmBudgetImportBtn");if(btn)btn.onclick=()=>applyBudgetImport(parsed);
-}
-function applyBudgetImport(parsed){
-  if(!parsed||parsed.errors?.length)return toast("Corrige les erreurs avant d'importer");
-  let added=0,updated=0,skipped=0,balanceItem=null,planSaved=0;
-  const planItems=parsed.items.filter(x=>x.type==="plan");
-  if(planItems.length&&parsed.planMonth){
-    state.monthlyPlans=state.monthlyPlans||{};
-    removeUnfinishedOperationalForPlanMonth(parsed.planMonth);
-    state.monthlyPlans[parsed.planMonth]={month:parsed.planMonth,items:planItems.map(x=>({...x,id:uid("plan")})),updatedAt:nowIso()};
-    planSaved=planItems.length;
-    syncMonthlyPlanToOperational(parsed.planMonth);
-  }
-  parsed.items.forEach(item=>{
-    if(item.type==="plan")return;
-    if(item.type==="balance"){balanceItem=item;return}
-    if(item.type==="income"||item.type==="expense"){
-      if(transactionLooksDuplicate(item)){skipped++;return}
-      if(item.type==="income")state.transactions.unshift({id:uid("tx"),kind:"income",amount:item.amount,date:item.date,name:item.name,memberName:profile.memberName||"Moi",note:"Import Budget Pack depuis ChatGPT",createdAt:nowIso(),updatedAt:nowIso()});
-      else state.transactions.unshift({id:uid("tx"),kind:"expense",amount:item.amount,merchant:item.merchant,category:item.category||"Autre",date:item.date,needFun:"",memberName:profile.memberName||"Moi",note:"Import Budget Pack depuis ChatGPT",createdAt:nowIso(),updatedAt:nowIso()});
-      added++;return;
-    }
-    if(item.type==="bill"){
-      let b=findBillByImportName(item.name);
-      if(b){
-        b.name=item.name;b.amount=item.amount;b.frequency=item.frequency;b.dueDay=item.dueDay;b.variable=!!b.variable;b.active=true;delete b.deletedAt;delete b.endedAt;
-        if(item.dueDate){b.dueDate=item.dueDate;b.startDate=item.dueDate}
-        b.updatedAt=nowIso();updated++;
-      }else{
-        b={id:uid("bill"),name:item.name,amount:item.amount,dueDay:item.dueDay,category:"Facture",frequency:item.frequency,variable:false,autopay:false,active:true,statuses:{},createdAt:nowIso(),updatedAt:nowIso(),activeFrom:item.dueDate||today()};
-        if(item.dueDate){b.dueDate=item.dueDate;b.startDate=item.dueDate}
-        state.bills.push(b);added++;
-      }
-      return;
-    }
-    if(item.type==="paidBill"){
-      let b=findBillByImportName(item.name);
-      if(!b){
-        b={id:uid("bill"),name:item.name,amount:item.amount,dueDay:Number(item.dueDate.slice(8,10))||1,dueDate:item.dueDate,startDate:item.dueDate,category:"Facture",frequency:"one",variable:false,autopay:false,active:true,statuses:{},activeFrom:item.dueDate,createdAt:nowIso(),updatedAt:nowIso()};
-        state.bills.push(b);added++;
-      }
-      b.statuses=b.statuses||{};
-      if(b.statuses[item.dueDate]?.paidAt){skipped++;return}
-      b.statuses[item.dueDate]={...(b.statuses[item.dueDate]||{}),paidAt:`${item.date}T12:00:00`,paidAmount:item.amount,paidBy:profile.memberName||"Moi",updatedAt:nowIso()};
-      b.updatedAt=nowIso();updated++;
-    }
-  });
-  if(balanceItem){
-    const before=currentBalance();
-    state.settings.startBalance=Number(state.settings.startBalance||0)+(Number(balanceItem.amount)-before);
-    touchSettings();updated++;
-  }
-  saveState();closeModal();
-  const bits=[];if(planSaved)bits.push(`${planSaved} prévision(s)`);if(added)bits.push(`${added} ajouté(s)`);if(updated)bits.push(`${updated} mis à jour`);if(skipped)bits.push(`${skipped} ignoré(s)`);
-  toast(`Import terminé ✅ ${bits.join(" · ")||"OK"}`);
+async function testLocalNotification(){
+  try{if(!("Notification" in window))return toast("Notifications non supportées");if(Notification.permission!=="granted")return toast("Active d’abord les notifications");const reg=("serviceWorker" in navigator)?await navigator.serviceWorker.ready:null;if(reg?.showNotification)await reg.showNotification("N’OUBLIE RIEN 🔔",{body:"Test local réussi ✅",icon:"icon-192.png",badge:"icon-192.png",tag:"noublie-test"});else new Notification("N’OUBLIE RIEN 🔔",{body:"Test local réussi ✅"});toast("Test local envoyé 🔔")}catch{toast("Test local impossible")}
 }
 
-function replaceDisplayedBalance(target){
-  const before=currentBalance();
-  state.settings.startBalance=Number(state.settings.startBalance||0)+(Number(target)-before);
-  touchSettings();
-  saveState();
-}
+function exportHub(){const blob=new Blob([JSON.stringify({app:"N’OUBLIE RIEN",build:BUILD,familyHub:hub()},null,2)],{type:"application/json"}),a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=`noublie-rien-${new Date().toISOString().slice(0,10)}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);toast("Sauvegarde exportée 📤")}
+function importHubFile(file){const r=new FileReader();r.onload=()=>{try{const j=JSON.parse(r.result);const incoming=j.familyHub||j[HUB_KEY];if(!incoming||!Array.isArray(incoming.tasks)||!Array.isArray(incoming.jobs))throw Error();state[HUB_KEY]={...defaultHub(),...incoming};saveState();toast("Sauvegarde importée ✅")}catch{toast("Fichier invalide")}};r.readAsText(file)}
 
-function setCurrentBalance(){
-  const value=prompt("Quel est le solde exact dans ton compte présentement?\n\nTu peux écrire un montant négatif, exemple : -250",String(Number(currentBalance().toFixed(2))));
-  if(value===null)return;
-  const normalized=String(value).trim().replace(/\s/g,"").replace(",",".").replace("$","");
-  const amount=Number(normalized);
-  if(!Number.isFinite(amount))return toast("Entre un montant valide");
-  if(!confirm(`Remplacer le solde affiché par ${money(amount)}?\n\nLes factures, l'historique, le partage et les notifications restent intacts.`))return;
-  replaceDisplayedBalance(amount);
-  toast("Solde actuel défini ✅");
-}
+if("serviceWorker" in navigator)navigator.serviceWorker.register("sw.js").catch(()=>{});
+render();
+if(profile.token&&profile.apiUrl){pullCloud();clearInterval(pullTimer);pullTimer=setInterval(()=>{if(document.visibilityState==="visible")pullCloud()},15000)}
+queueOneSignal(false);
+document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible"&&profile.token&&profile.apiUrl)pullCloud()});
 
-function restartBudget(){
-  if(!confirm("Repartir le budget à 0,00 $ aujourd'hui?\n\nLes anciennes factures en retard disparaîtront. Tes factures, tes paies planifiées, ton historique, le partage et les notifications seront conservés."))return;
-  if(!confirm("Dernière confirmation : mettre le disponible à 0,00 $ et repartir à partir d'aujourd'hui?"))return;
-  state.settings.trackingStartDate=today();
-  (state.bills||[]).forEach(b=>{if(!b.deletedAt){b.activeFrom=today();b.updatedAt=nowIso()}});
-  replaceDisplayedBalance(0);
-  toast("Budget reparti à zéro ✅");
-}
-
-function settingsChanged(){
-  state.settings.startBalance=Number($("#startBalance").value||0);state.settings.startBalanceDate=$("#startBalanceDate").value||today();state.settings.overdraftLimit=Number($("#overdraftLimit").value||1000);state.settings.groceryBudget=Number($("#groceryBudget").value||0);state.settings.reminderHour=Math.max(0,Math.min(23,Number($("#reminderHour").value||9)));state.settings.sundayReminder=$("#sundayReminder").checked;state.settings.dayBeforeReminder=$("#dayBeforeReminder").checked;state.settings.lateReminder=$("#lateReminder").checked;state.settings.historyMonths=$("#historyMonths").value;touchSettings();saveState()
-}
-function goPage(id){$$(".page").forEach(p=>p.classList.toggle("active",p.id===id));$$(".bottomNav button").forEach(b=>b.classList.toggle("active",b.dataset.page===id));scrollTo(0,0)}
-function add(kind){if(kind==="expense")expenseForm();else if(kind==="income"||kind==="over")incomeForm(kind);else if(kind==="bill")billForm();else if(kind==="goal")goalForm()}
-function migrateTrackingStart(){
-  let changed=false;
-  state.settings=state.settings||{};
-  if(!state.settings.trackingStartDate){
-    state.settings.trackingStartDate=today();
-    state.settings.updatedAt=nowIso();
-    changed=true;
-  }
-  (state.bills||[]).forEach(b=>{
-    if(!b.activeFrom){
-      b.activeFrom=state.settings.trackingStartDate;
-      b.updatedAt=nowIso();
-      changed=true;
-    }
-  });
-  if(changed)localStorage.setItem(LS_KEY,JSON.stringify(state));
-}
-function archiveOld(){ // Safe monthly summaries, then detail removal according to preference
-  const hm=state.settings.historyMonths;if(hm==="always")return;
-  const cutoff=new Date();cutoff.setMonth(cutoff.getMonth()-Number(hm||12));const cut=isoDate(cutoff);
-  const old=state.transactions.filter(t=>t.date<cut);if(!old.length)return;
-  const groups={};const ensure=k=>groups[k]||(groups[k]={income:0,expense:0,over:0,billAmount:0,billsPaid:0,categories:{}});
-  old.forEach(t=>{const k=monthKey(t.date),g=ensure(k);g[t.kind]=(g[t.kind]||0)+Number(t.amount||0);if(t.kind==="expense")g.categories[t.category||"Autre"]=(g.categories[t.category||"Autre"]||0)+Number(t.amount||0)});
-  state.bills.forEach(b=>Object.keys(b.statuses||{}).forEach(due=>{const st=b.statuses[due],pd=(st.paidAt||"").slice(0,10);if(pd&&pd<cut){const k=monthKey(pd),g=ensure(k),amt=Number(st.paidAmount??b.amount??0),cat=(b.category&&b.category!=="Facture")?b.category:"Factures";g.billAmount+=amt;g.billsPaid+=1;g.categories[cat]=(g.categories[cat]||0)+amt;delete b.statuses[due];b.updatedAt=nowIso()}}));
-  Object.entries(groups).forEach(([k,v])=>state.archives[k]={...(state.archives[k]||{}),...v,archivedAt:nowIso()});
-  state.transactions=state.transactions.filter(t=>t.date>=cut);localStorage.setItem(LS_KEY,JSON.stringify(state))
-}
-
-
-
-// ----- Nouveau départ calendrier : on garde seulement ce qui compte à partir du 30 oct. 2026 -----
-const CALENDAR_FRESH_START="2026-10-30";
-function applyCalendarFreshStart(){
-  const cut=CALENDAR_FRESH_START;
-  let changed=false;
-  state.settings=state.settings||{};
-  if(state.settings.calendarFreshStartDate!==cut){state.settings.calendarFreshStartDate=cut;changed=true}
-  if(!state.settings.trackingStartDate||state.settings.trackingStartDate<cut){state.settings.trackingStartDate=cut;changed=true}
-
-  // Plus d'ancien plan ni d'archives : le nouveau calendrier repart proprement d'aujourd'hui.
-  if(Object.keys(state.monthlyPlans||{}).length){state.monthlyPlans={};changed=true}
-  if(Object.keys(state.archives||{}).length){state.archives={};changed=true}
-
-  // L'ancien historique financier avant la date de départ disparaît.
-  const tx=(state.transactions||[]).filter(t=>String(t?.date||"")>=cut);
-  if(tx.length!==(state.transactions||[]).length){state.transactions=tx;changed=true}
-
-  // Les vieilles occurrences / statuts ne doivent plus revenir comme "retard".
-  (state.bills||[]).forEach(b=>{
-    if(!b)return;
-    if(!b.activeFrom||b.activeFrom<cut){b.activeFrom=cut;b.updatedAt=nowIso();changed=true}
-    if(b.statuses&&Object.keys(b.statuses).some(d=>d<cut)){
-      b.statuses=Object.fromEntries(Object.entries(b.statuses).filter(([d])=>d>=cut));
-      b.updatedAt=nowIso();changed=true;
-    }
-    // Un ancien élément ponctuel est conservé seulement comme tombstone technique pour la synchro,
-    // mais il ne peut plus réapparaître dans le calendrier.
-    if(b.frequency==="one"&&b.dueDate&&b.dueDate<cut&&!b.deletedAt){
-      b.deletedAt=nowIso();b.active=false;b.updatedAt=nowIso();changed=true;
-    }
-  });
-
-  if(changed){
-    state.settings.updatedAt=nowIso();
-    state.updatedAt=nowIso();
-    localStorage.setItem(LS_KEY,JSON.stringify(state));
-  }
-  return changed;
-}
-
-// =====================================================================
-// BUDGET PACK — CALENDAR FIRST V1 (2026-10-30)
-// Nouveau virage : rendez-vous + choses à payer + import rapide par code.
-// Les rendez-vous sont stockés comme éléments datés dans state.bills (montant 0),
-// ce qui conserve le partage et le moteur de rappels existant sans migration risquée.
-// =====================================================================
-let calMonthCursor=new Date(new Date().getFullYear(),new Date().getMonth(),1);
-let calSelectedDate=today();
-let calViewFilter="all";
-
-function calKind(b){
-  if(b?.calendarKind==="appointment"||importName(b?.category)==="rendez-vous"||importName(b?.category)==="rendez vous")return "appointment";
-  return "payment";
-}
-function calIsDone(item){return !!item?.status?.paidAt}
-function calTimeLabel(b){return b?.eventTime?String(b.eventTime).slice(0,5):""}
-function calFullDate(date){return parseLocal(date).toLocaleDateString("fr-CA",{weekday:"long",day:"numeric",month:"long",year:"numeric"})}
-function calShortDate(date){return parseLocal(date).toLocaleDateString("fr-CA",{weekday:"short",day:"numeric",month:"short"})}
-function calEscapeAttr(s){return esc(String(s??""))}
-function calItems(from,to){
-  return dueItems(from,to).map(x=>({...x,calKind:calKind(x.bill)})).sort((a,b)=>{
-    const d=a.due.localeCompare(b.due);if(d)return d;
-    const ta=calTimeLabel(a.bill)||"99:99",tb=calTimeLabel(b.bill)||"99:99";
-    if(ta!==tb)return ta.localeCompare(tb);
-    return String(a.bill.name||"").localeCompare(String(b.bill.name||""),"fr");
-  });
-}
-function calUpcoming(days=7){return calItems(today(),addDays(today(),days)).filter(x=>!calIsDone(x))}
-function calPaymentTotal(days=7){return calUpcoming(days).filter(x=>x.calKind==="payment").reduce((sum,x)=>sum+Number(x.bill.amount||0),0)}
-function calAppointmentCount(days=7){return calUpcoming(days).filter(x=>x.calKind==="appointment").length}
-function calItemIcon(item){return item.calKind==="appointment"?"📅":"💸"}
-function calDoneAtLabel(item){
-  const raw=item?.status?.paidAt;if(!raw)return "";
-  const d=new Date(raw);if(Number.isNaN(d.getTime()))return "";
-  return d.toLocaleString("fr-CA",{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"});
-}
-function normalizeCalReminder(v){
-  v=String(v||"").trim().toLowerCase().replace(/\s+/g,"");
-  if(!v)return "";
-  if(["veille","laveille","1j","1d","24h"].includes(v))return "1d";
-  let m=v.match(/^(\d{1,3})(h|hr|hrs|heure|heures)$/);if(m)return `${Number(m[1])}h`;
-  m=v.match(/^(\d{1,3})(m|min|mins|minute|minutes)$/);if(m)return `${Number(m[1])}m`;
-  return "";
-}
-function parseCalReminderSpec(raw){
-  const vals=String(raw||"").split(/[,;+]/).map(normalizeCalReminder).filter(Boolean);
-  return [...new Set(vals)].slice(0,5);
-}
-function calReminderLabel(v){
-  if(v==="1d")return "la veille";
-  const h=String(v||"").match(/^(\d+)h$/);if(h)return `${h[1]} h avant`;
-  const m=String(v||"").match(/^(\d+)m$/);if(m)return `${m[1]} min avant`;
-  return String(v||"");
-}
-function calReminderSummary(b){
-  const arr=Array.isArray(b?.reminderOffsets)&&b.reminderOffsets.length?b.reminderOffsets:(calKind(b)==="appointment"?["1d"]:[]);
-  return arr.map(calReminderLabel).filter(Boolean).join(" + ");
-}
-function calFilterMatch(item){
-  if(calViewFilter==="done")return calIsDone(item);
-  if(calViewFilter==="open")return !calIsDone(item);
-  return true;
-}
-function calItemMeta(item){
-  const done=calIsDone(item),doneAt=calDoneAtLabel(item);
-  if(item.calKind==="appointment"){
-    const tm=calTimeLabel(item.bill);
-    if(done)return `✅ Fait${doneAt?` · ${esc(doneAt)}`:""}`;
-    return `${tm?`⏰ ${esc(tm)} · `:""}Rendez-vous`;
-  }
-  const paid=item.status?.paidAmount;
-  const real=done&&paid!=null?Number(paid):null;
-  const planned=Number(item.bill.amount||0);
-  if(done)return `✅ Payé${doneAt?` · ${esc(doneAt)}`:""}${real!=null&&Math.abs(real-planned)>.005?` · réel ${money(real)}`:""}`;
-  return "À payer";
-}
-function calRow(item,{showDate=false}={}){
-  const done=calIsDone(item), kind=item.calKind;
-  const amount=kind==="payment"?`<div class="cf-amount">${money(item.status?.paidAmount??item.bill.amount)}</div>`:"";
-  const date=showDate?`<div class="cf-datepill">${esc(calShortDate(item.due))}</div>`:"";
-  const complete=!done?`<button class="cf-check" onclick="BP.calComplete('${item.bill.id}','${item.due}')" title="${kind==="appointment"?"Marquer fait":"Marquer payé"}">✓</button>`:`<span class="cf-done">✓</span>`;
-  const edit=`<button class="cf-edit" onclick="BP.calEdit('${item.bill.id}','${item.due}')" title="Modifier">✎</button>`;
-  const detail=[];
-  if(item.bill.location)detail.push(`📍 ${esc(item.bill.location)}`);
-  if(item.bill.note)detail.push(`📝 ${esc(item.bill.note)}`);
-  const reminder=kind==="appointment"&&!done?calReminderSummary(item.bill):"";
-  return `<div class="cf-row ${done?"is-done":""} ${kind}">${date}<div class="cf-icon">${calItemIcon(item)}</div><div class="cf-main"><div class="cf-title">${esc(item.bill.name)}</div><div class="cf-meta">${calItemMeta(item)}</div>${detail.length?`<div class="cf-note">${detail.join("<br>")}</div>`:""}${reminder?`<div class="cf-reminder">🔔 ${esc(reminder)}</div>`:""}</div>${amount}<div class="cf-actions">${complete}${edit}</div></div>`;
-}
-function ensureCalendarFirstStyles(){
-  if(document.getElementById("calendarFirstStyles"))return;
-  const st=document.createElement("style");st.id="calendarFirstStyles";
-  st.textContent=`
-    body.calendar-first{padding-bottom:88px}
-    body.calendar-first .topbar{padding-bottom:12px;background:linear-gradient(180deg,var(--bg) 75%,transparent)}
-    body.calendar-first .brand{font-size:22px;letter-spacing:.3px}
-    .cf-brandline{font-size:10px;color:var(--muted);font-weight:800;letter-spacing:.7px;text-transform:uppercase;margin-top:3px}
-    .cf-shell{display:flex;flex-direction:column;gap:12px}
-    .cf-hero{position:relative;overflow:hidden;border:1px solid var(--line);border-radius:26px;padding:20px;background:linear-gradient(145deg,var(--card),var(--card2));box-shadow:var(--shadow)}
-    .cf-hero:after{content:"";position:absolute;width:180px;height:180px;border-radius:50%;right:-90px;top:-110px;background:var(--accent);opacity:.10;filter:blur(2px)}
-    .cf-kicker{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);font-weight:900}
-    .cf-datebig{font-size:30px;line-height:1.05;font-weight:950;margin-top:6px;text-transform:capitalize}
-    .cf-herosub{font-size:12px;color:var(--muted);margin-top:7px}
-    .cf-quick{display:grid;grid-template-columns:1.2fr 1fr 1fr;gap:8px;margin-top:16px;position:relative;z-index:1}
-    .cf-qbtn{border:1px solid var(--line);background:var(--card2);color:var(--text);border-radius:15px;padding:12px 8px;font-weight:900;font-size:12px}
-    .cf-qbtn.primary{background:var(--accent)!important;color:var(--accentText)!important}
-    .cf-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
-    .cf-stat{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:12px;min-width:0}
-    .cf-stat span{display:block;color:var(--muted);font-size:10px;font-weight:800}
-    .cf-stat strong{display:block;font-size:19px;margin-top:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-    .cf-section{background:var(--card);border:1px solid var(--line);border-radius:22px;padding:14px;box-shadow:var(--shadow)}
-    .cf-sectionhead{display:flex;justify-content:space-between;align-items:center;margin-bottom:9px}
-    .cf-sectionhead strong{font-size:15px}.cf-sectionhead button{border:0;background:transparent;color:var(--accent);font-weight:900}
-    .cf-confirm{border-color:rgba(255,184,77,.55);box-shadow:0 12px 30px rgba(255,184,77,.08)}
-    .cf-confirm-help{font-size:11px;color:var(--muted);line-height:1.4;margin:-1px 0 6px;padding:0 2px 8px;border-bottom:1px solid var(--line)}
-    .cf-empty{padding:18px 10px;text-align:center;color:var(--muted);font-size:12px}
-    .cf-row{display:flex;align-items:center;gap:9px;padding:11px 2px;border-top:1px solid var(--line)}
-    .cf-row:first-child{border-top:0}.cf-row.is-done{opacity:.58}
-    .cf-icon{width:36px;height:36px;display:grid;place-items:center;border-radius:12px;background:var(--card2);font-size:18px;flex:0 0 auto}
-    .cf-main{min-width:0;flex:1}.cf-title{font-weight:900;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.cf-meta{font-size:11px;color:var(--muted);margin-top:3px}.cf-note{font-size:11px;color:var(--text);opacity:.88;margin-top:5px;line-height:1.35;white-space:normal}.cf-reminder{font-size:10px;color:var(--accent);font-weight:850;margin-top:5px}
-    .cf-amount{font-weight:950;white-space:nowrap}.cf-actions{display:flex;gap:5px}.cf-actions button,.cf-done{width:34px;height:34px;display:grid;place-items:center;border-radius:11px;border:1px solid var(--line);background:var(--card2);color:var(--text);font-weight:950}.cf-check{color:var(--accent)!important}.cf-done{color:var(--ok);font-size:16px}
-    .cf-datepill{font-size:10px;color:var(--muted);width:51px;flex:0 0 51px;font-weight:850;line-height:1.2;text-transform:capitalize}
-    .cf-alert{border-color:rgba(255,107,107,.35);background:linear-gradient(145deg,var(--card),rgba(255,107,107,.05))}
-    .cf-calendar{background:var(--card);border:1px solid var(--line);border-radius:24px;padding:14px;box-shadow:var(--shadow)}
-    .cf-calhead{display:grid;grid-template-columns:42px 1fr 42px;align-items:center;text-align:center;margin-bottom:12px}.cf-calhead strong{text-transform:capitalize;font-size:18px}.cf-calhead button{height:38px;border:1px solid var(--line);border-radius:12px;background:var(--card2);color:var(--text);font-size:22px}
-    .cf-weekdays,.cf-monthgrid{display:grid;grid-template-columns:repeat(7,1fr);gap:5px}.cf-weekdays div{text-align:center;font-size:9px;color:var(--muted);font-weight:900;padding:4px 0}.cf-dayblank{min-height:54px}.cf-day{min-height:58px;border:1px solid transparent;background:var(--card2);color:var(--text);border-radius:13px;padding:7px 4px;text-align:left;position:relative}.cf-day b{font-size:12px}.cf-day.today{border-color:var(--accent)}.cf-day.selected{background:var(--accent);color:var(--accentText)}.cf-daydots{display:flex;gap:3px;margin-top:7px;flex-wrap:wrap}.cf-dot{width:6px;height:6px;border-radius:50%;background:var(--muted)}.cf-dot.pay{background:var(--warn)}.cf-dot.rdv{background:var(--accent)}.cf-dot.done{background:var(--ok);opacity:.38}.cf-day.selected .cf-dot{background:var(--accentText);opacity:.7}.cf-filter{display:flex;gap:5px;background:var(--card2);padding:4px;border-radius:13px;margin:13px 0 4px}.cf-filter button{flex:1;border:0;background:transparent;color:var(--muted);border-radius:10px;padding:8px 5px;font-size:10px;font-weight:850}.cf-filter button.active{background:var(--card);color:var(--text)}
-    .cf-selected-title{font-size:13px;color:var(--muted);text-transform:capitalize;margin:14px 2px 5px;font-weight:850}
-    .cf-importbox{background:linear-gradient(145deg,var(--card),var(--card2));border:1px solid var(--line);border-radius:24px;padding:18px;box-shadow:var(--shadow)}
-    .cf-importbox h2{margin:0 0 5px;font-size:23px}.cf-importbox p{color:var(--muted);font-size:12px;line-height:1.45;margin:0 0 15px}
-    .cf-addgrid{display:grid;grid-template-columns:1fr 1fr;gap:9px}.cf-addgrid button{min-height:84px;border:1px solid var(--line);background:var(--card);color:var(--text);border-radius:20px;font-size:25px;font-weight:900}.cf-addgrid span{display:block;font-size:12px;margin-top:7px}
-    .cf-code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;background:var(--card2);padding:10px;border-radius:12px;color:var(--muted);white-space:pre-wrap;overflow-wrap:anywhere}
-    body.calendar-first #homePage>#overdraftCard,body.calendar-first #homePage>.heroCard,body.calendar-first #homePage>.stats4,body.calendar-first #homePage>#homeBills,body.calendar-first #homePage>.actionGrid,body.calendar-first #homePage>#homeGoals{display:none!important}
-    body.calendar-first #homePage>.sectionTitle{display:none!important}
-    body.calendar-first #calendarPage>.sectionTitle,body.calendar-first #calendarRange,body.calendar-first #calendarList{display:none!important}
-    body.calendar-first #addPage>.sectionTitle,body.calendar-first #addPage>.bigAddList,body.calendar-first #addPage>.card{display:none!important}
-    body.calendar-first .bottomNav{grid-template-columns:repeat(4,1fr)}
-    body.calendar-first .bottomNav button[data-page="summaryPage"],body.calendar-first .bottomNav button[data-page="historyPage"]{display:none!important}
-    body.calendar-first #historyPage,body.calendar-first #planTrackerCard,body.calendar-first #nextPayProjectionCard{display:none!important}
-    body.calendar-first .bottomNav button[data-page="homePage"] span:after{content:""}
-    @media(max-width:430px){.cf-datebig{font-size:27px}.cf-quick{grid-template-columns:1.25fr 1fr 1fr}.cf-qbtn{font-size:11px;padding:11px 5px}.cf-stat strong{font-size:16px}.cf-day{min-height:54px;padding:6px 3px}.cf-weekdays,.cf-monthgrid{gap:4px}}
-  `;
-  document.head.appendChild(st);
-}
-
-function ensureCalendarFirst(){
-  ensureCalendarFirstStyles();document.body.classList.add("calendar-first");
-  const brand=document.querySelector(".brand");
-  if(brand&&!document.getElementById("cfBrandLine")){
-    const line=document.createElement("div");line.id="cfBrandLine";line.className="cf-brandline";line.textContent="Calendrier familial · paiements · rappels";brand.insertAdjacentElement("afterend",line);
-  }
-  const plus=document.getElementById("quickExpenseBtn");
-  if(plus&&!plus.dataset.calendarFirst){
-    const clone=plus.cloneNode(true);clone.dataset.calendarFirst="1";clone.setAttribute("aria-label","Import rapide");clone.textContent="＋";clone.onclick=openCalImport;plus.replaceWith(clone);
-  }
-  const home=document.getElementById("homePage");
-  if(home&&!document.getElementById("cfHome")){
-    const host=document.createElement("div");host.id="cfHome";host.className="cf-shell";home.prepend(host);
-  }
-  const cal=document.getElementById("calendarPage");
-  if(cal&&!document.getElementById("cfCalendarHost")){
-    const host=document.createElement("div");host.id="cfCalendarHost";host.className="cf-shell";cal.prepend(host);
-  }
-  const addp=document.getElementById("addPage");
-  if(addp&&!document.getElementById("cfAddHost")){
-    const host=document.createElement("div");host.id="cfAddHost";host.className="cf-shell";addp.prepend(host);
-  }
-  const homeNav=document.querySelector('.bottomNav button[data-page="homePage"] span');if(homeNav)homeNav.textContent="Aujourd’hui";
-  const calNav=document.querySelector('.bottomNav button[data-page="calendarPage"] span');if(calNav)calNav.textContent="Calendrier";
-  const addNav=document.querySelector('.bottomNav button[data-page="addPage"] span');if(addNav)addNav.textContent="Ajouter";
-  document.querySelectorAll("#settingsPage .card").forEach(card=>{const h=card.querySelector("h3");if(h&&h.textContent.trim()==="Historique")card.style.display="none"});
-  ["budgetImportBtn","monthlyPlanBtn"].forEach(id=>{const el=document.getElementById(id);if(el)el.style.display="none"});
-  renderCalendarSettingsTools();
-}
-
-function renderCalendarFirstHome(){
-  const host=document.getElementById("cfHome");if(!host)return;
-  const now=today(), todayItems=calItems(now,now), openToday=todayItems.filter(x=>!calIsDone(x));
-  const up=calUpcoming(7), weekItems=up.filter(x=>x.due!==now).slice(0,8);
-  // Un RDV passé mais non coché reste visible ici jusqu'à ce qu'il soit confirmé.
-  const confirmRdv=calItems(CALENDAR_FRESH_START,addDays(now,-1))
-    .filter(x=>x.calKind==="appointment"&&!calIsDone(x));
-  const todayHtml=openToday.length?openToday.map(x=>calRow(x)).join(""):`<div class="cf-empty">✨ Rien à faire aujourd’hui. Les éléments terminés restent visibles dans le calendrier.</div>`;
-  const weekHtml=weekItems.length?weekItems.map(x=>calRow(x,{showDate:true})).join(""):`<div class="cf-empty">Rien d’autre dans les 7 prochains jours.</div>`;
-  const confirmHtml=confirmRdv.length?`<div class="cf-section cf-confirm"><div class="cf-sectionhead"><strong>⚠️ À confirmer</strong><span class="badge orange">${confirmRdv.length}</span></div><div class="cf-confirm-help">Ces rendez-vous sont passés mais n’ont pas encore été cochés. Fais ✅ Fait ou ✏️ Modifier — ils resteront ici jusque-là.</div>${confirmRdv.map(x=>calRow(x,{showDate:true})).join("")}</div>`:"";
-  host.innerHTML=`
-    <div class="cf-hero">
-      <div class="cf-kicker">Aujourd’hui</div>
-      <div class="cf-datebig">${esc(calFullDate(now))}</div>
-      <div class="cf-herosub">Tout ce que tu dois retenir, au même endroit.</div>
-      <div class="cf-quick">
-        <button class="cf-qbtn primary" onclick="BP.openCalImport()">⚡ Importer un code</button>
-        <button class="cf-qbtn" onclick="BP.openCalAppointment()">📅 + RDV</button>
-        <button class="cf-qbtn" onclick="BP.openCalPayment()">💸 + Paiement</button>
-      </div>
-    </div>
-    <div class="cf-stats">
-      <div class="cf-stat"><span>Aujourd’hui</span><strong>${openToday.length}</strong></div>
-      <div class="cf-stat"><span>À confirmer</span><strong>${confirmRdv.length}</strong></div>
-      <div class="cf-stat"><span>À payer · 7 jours</span><strong>${money(calPaymentTotal(7))}</strong></div>
-    </div>
-    ${confirmHtml}
-    <div class="cf-section"><div class="cf-sectionhead"><strong>📍 Aujourd’hui</strong><button onclick="BP.goCal()">Calendrier →</button></div>${todayHtml}</div>
-    <div class="cf-section"><div class="cf-sectionhead"><strong>🗓️ Les 7 prochains jours</strong><button onclick="BP.goCal()">Voir tout →</button></div>${weekHtml}</div>`;
-}
-
-function calMonthKeyFromCursor(){return `${calMonthCursor.getFullYear()}-${pad(calMonthCursor.getMonth()+1)}`}
-function renderCalendarFirstCalendar(){
-  const host=document.getElementById("cfCalendarHost");if(!host)return;
-  const y=calMonthCursor.getFullYear(),m=calMonthCursor.getMonth(), first=new Date(y,m,1), last=new Date(y,m+1,0);
-  const firstOffset=(first.getDay()+6)%7, days=last.getDate();
-  const start=`${y}-${pad(m+1)}-01`,end=`${y}-${pad(m+1)}-${pad(days)}`;
-  const items=calItems(start,end), byDate={};items.forEach(x=>(byDate[x.due]=byDate[x.due]||[]).push(x));
-  const cells=[];for(let i=0;i<firstOffset;i++)cells.push(`<div class="cf-dayblank"></div>`);
-  for(let d=1;d<=days;d++){
-    const date=`${y}-${pad(m+1)}-${pad(d)}`, list=byDate[date]||[];
-    const dots=list.slice(0,4).map(x=>`<i class="cf-dot ${x.calKind==="appointment"?"rdv":"pay"} ${calIsDone(x)?"done":""}"></i>`).join("");
-    cells.push(`<button class="cf-day ${date===today()?"today":""} ${date===calSelectedDate?"selected":""}" onclick="BP.selectCalDate('${date}')"><b>${d}</b><div class="cf-daydots">${dots}</div></button>`);
-  }
-  const selectedAll=calItems(calSelectedDate,calSelectedDate), selected=selectedAll.filter(calFilterMatch);
-  const emptyText=calViewFilter==="done"?"Aucun élément terminé cette journée.":calViewFilter==="open"?"Rien à faire cette journée.":"Aucun rendez-vous ni paiement cette journée.";
-  const selHtml=selected.length?selected.map(x=>calRow(x)).join(""):`<div class="cf-empty">${emptyText}</div>`;
-  const label=new Date(y,m,1).toLocaleDateString("fr-CA",{month:"long",year:"numeric"});
-  const filter=`<div class="cf-filter"><button class="${calViewFilter==="all"?"active":""}" onclick="BP.setCalFilter('all')">Tous</button><button class="${calViewFilter==="open"?"active":""}" onclick="BP.setCalFilter('open')">À faire</button><button class="${calViewFilter==="done"?"active":""}" onclick="BP.setCalFilter('done')">✅ Terminés</button></div>`;
-  host.innerHTML=`<div class="cf-calendar"><div class="cf-calhead"><button onclick="BP.shiftCalMonth(-1)">‹</button><strong>${esc(label)}</strong><button onclick="BP.shiftCalMonth(1)">›</button></div><div class="cf-weekdays"><div>L</div><div>M</div><div>M</div><div>J</div><div>V</div><div>S</div><div>D</div></div><div class="cf-monthgrid">${cells.join("")}</div>${filter}<div class="cf-selected-title">${esc(calFullDate(calSelectedDate))}</div>${selHtml}<div class="cf-quick" style="margin-top:12px"><button class="cf-qbtn primary" onclick="BP.openCalImport()">⚡ Importer</button><button class="cf-qbtn" onclick="BP.openCalAppointment('${calSelectedDate}')">📅 + RDV</button><button class="cf-qbtn" onclick="BP.openCalPayment('${calSelectedDate}')">💸 + Paiement</button></div></div>`;
-}
-function renderCalendarFirstAdd(){
-  const host=document.getElementById("cfAddHost");if(!host)return;
-  host.innerHTML=`<div class="cf-importbox"><div class="cf-kicker">Ajout rapide</div><h2>Dis-le moi, colle le code, terminé.</h2><p>Tu peux m’écrire le rendez-vous en vrac : heure, lieu, quoi apporter et rappels. Je transforme tout en code prêt à importer.</p><button class="fullBtn primary" onclick="BP.openCalImport()">⚡ Importer un code CAL</button><div class="cf-code" style="margin-top:10px">CAL|2026-11-12|09:30|RDV|Hôpital|Amener carte assurance maladie • Arriver 15 min avant|RAPPEL=1j,2h\nCAL|2026-11-20||PAIEMENT|Hydro|445</div></div><div class="cf-addgrid"><button onclick="BP.openCalAppointment()">📅<span>Ajouter un rendez-vous</span></button><button onclick="BP.openCalPayment()">💸<span>Ajouter un paiement</span></button></div>`;
-}
-function renderCalendarFirst(){
-  ensureCalendarFirst();renderCalendarFirstHome();renderCalendarFirstCalendar();renderCalendarFirstAdd();
-}
-
-function openCalAppointment(defaultDate=today(),editId=null){
-  const b=editId?state.bills.find(x=>x.id===editId):null;
-  const date=b?.dueDate||defaultDate||today(),time=b?.eventTime||"",name=b?.name||"",note=b?.note||"",location=b?.location||"";
-  const reminders=Array.isArray(b?.reminderOffsets)&&b.reminderOffsets.length?b.reminderOffsets:["1d"];
-  const ck1=reminders.includes("1d")?"checked":"",ck2=reminders.includes("2h")?"checked":"";
-  openModal(`${modalHeader(b?"Modifier le rendez-vous":"📅 Nouveau rendez-vous")}<form id="cfAppointmentForm" class="formGrid"><label class="span2">Rendez-vous<input name="name" value="${calEscapeAttr(name)}" placeholder="Ex. Hôpital" required autofocus></label><label>Date<input name="date" type="date" min="${CALENDAR_FRESH_START}" value="${calEscapeAttr(date)}" required></label><label>Heure<input name="time" type="time" value="${calEscapeAttr(time)}"></label><label class="span2">Lieu (facultatif)<input name="location" value="${calEscapeAttr(location)}" placeholder="Ex. Hôpital de Thetford · entrée principale"></label><label class="span2">À apporter / notes<textarea name="note" rows="3" placeholder="Ex. Amener carte assurance maladie · arriver 15 min avant">${esc(note)}</textarea></label><div class="span2 card" style="margin-top:4px"><strong>🔔 Rappels du rendez-vous</strong><label class="switchRow"><span>La veille</span><input name="reminder1d" type="checkbox" ${ck1}></label><label class="switchRow"><span>2 h avant (heure requise)</span><input name="reminder2h" type="checkbox" ${ck2}></label><div class="sub">Les rappels personnalisés sont partagés avec ta blonde comme le reste du calendrier.</div></div><button class="fullBtn primary span2">${b?"Enregistrer":"Ajouter au calendrier"}</button>${b?`<button type="button" class="fullBtn span2" onclick="BP.deleteBill('${b.id}')">🗑️ Supprimer</button>`:""}</form>`);
-  document.getElementById("cfAppointmentForm").onsubmit=e=>{
-    e.preventDefault();const f=new FormData(e.target),d=f.get("date"),tm=String(f.get("time")||"");
-    const reminders=[];if(f.get("reminder1d")==="on")reminders.push("1d");if(f.get("reminder2h")==="on")reminders.push("2h");
-    if(reminders.includes("2h")&&!tm)return toast("Ajoute une heure pour le rappel 2 h avant");
-    const obj=b||{id:uid("bill"),statuses:{},createdAt:nowIso()};
-    Object.assign(obj,{name:String(f.get("name")||"").trim(),amount:0,dueDay:Number(String(d).slice(8,10))||1,dueDate:d,startDate:d,category:"Rendez-vous",frequency:"one",variable:false,autopay:false,active:true,activeFrom:d,calendarKind:"appointment",eventTime:tm,location:String(f.get("location")||"").trim(),note:String(f.get("note")||"").trim(),reminderOffsets:reminders,updatedAt:nowIso()});
-    delete obj.deletedAt;delete obj.endedAt;if(!b)state.bills.push(obj);saveState();closeModal();toast(b?"Rendez-vous modifié ✅":"Rendez-vous ajouté 📅");
-  };
-}
-function openCalPayment(defaultDate=today(),editId=null){
-  const b=editId?state.bills.find(x=>x.id===editId):null;
-  if(b&&b.frequency!=="one")return billForm(b.id);
-  const date=b?.dueDate||defaultDate||today(),name=b?.name||"",amount=b?.amount??"",note=b?.note||"";
-  openModal(`${modalHeader(b?"Modifier le paiement":"💸 Nouveau paiement")}<form id="cfPaymentForm" class="formGrid"><label class="span2">À payer<input name="name" value="${calEscapeAttr(name)}" placeholder="Ex. Hydro" required autofocus></label><label>Montant prévu<input name="amount" type="number" step=".01" inputmode="decimal" value="${calEscapeAttr(amount)}" required></label><label>Date<input name="date" type="date" min="${CALENDAR_FRESH_START}" value="${calEscapeAttr(date)}" required></label><label class="span2">Note (facultatif)<input name="note" value="${calEscapeAttr(note)}"></label><div class="span2 card" style="margin-top:4px"><strong>✓ Montant réel</strong><div class="sub">Quand tu feras ✅, l’app te laissera confirmer ou corriger le vrai montant payé.</div></div><button class="fullBtn primary span2">${b?"Enregistrer":"Ajouter au calendrier"}</button>${b?`<button type="button" class="fullBtn span2" onclick="BP.deleteBill('${b.id}')">🗑️ Supprimer</button>`:""}</form>`);
-  document.getElementById("cfPaymentForm").onsubmit=e=>{
-    e.preventDefault();const f=new FormData(e.target),d=f.get("date"),amt=Number(f.get("amount")||0);if(!Number.isFinite(amt)||amt<0)return toast("Montant invalide");
-    const obj=b||{id:uid("bill"),statuses:{},createdAt:nowIso()};
-    Object.assign(obj,{name:String(f.get("name")||"").trim(),amount:amt,dueDay:Number(String(d).slice(8,10))||1,dueDate:d,startDate:d,category:"Paiement",frequency:"one",variable:false,autopay:false,active:true,activeFrom:d,calendarKind:"payment",calendarFlexible:true,note:String(f.get("note")||"").trim(),updatedAt:nowIso()});
-    delete obj.deletedAt;delete obj.endedAt;if(!b)state.bills.push(obj);saveState();closeModal();toast(b?"Paiement modifié ✅":"Paiement ajouté 💸");
-  };
-}
-function calComplete(id,due){
-  const b=state.bills.find(x=>x.id===id);if(!b)return;
-  if(calKind(b)==="appointment"){
-    setBillStatus(b,due,{paidAt:nowIso(),paidAmount:0,paidBy:profile.memberName||"Moi",calendarDone:true,snoozedUntil:null});toast("Rendez-vous marqué fait ✅");
-  }else payBill(id,due);
-}
-function calEdit(id,due){
-  const b=state.bills.find(x=>x.id===id);if(!b)return;
-  if(calKind(b)==="appointment")return openCalAppointment(due,id);
-  if(b.calendarKind==="payment"&&b.frequency==="one")return openCalPayment(due,id);
-  return billForm(id);
-}
-function selectCalDate(date){calSelectedDate=date;const d=parseLocal(date);calMonthCursor=new Date(d.getFullYear(),d.getMonth(),1);renderCalendarFirstCalendar()}
-function shiftCalMonth(n){calMonthCursor.setMonth(calMonthCursor.getMonth()+Number(n||0));const key=calMonthKeyFromCursor();if(!calSelectedDate.startsWith(key))calSelectedDate=`${key}-01`;renderCalendarFirstCalendar()}
-function setCalFilter(filter){calViewFilter=["all","open","done"].includes(filter)?filter:"all";renderCalendarFirstCalendar()}
-function goCal(){goPage("calendarPage");renderCalendarFirstCalendar()}
-
-function parseCalAppointmentExtras(parts){
-  let location="",noteParts=[],reminders=[];
-  parts.forEach(raw=>{
-    const field=String(raw||"").trim();if(!field)return;
-    const eq=field.indexOf("="),key=eq>=0?importKey(field.slice(0,eq)):"",val=eq>=0?field.slice(eq+1).trim():field;
-    if(["RAPPEL","RAPPELS","REMINDER","REMINDERS"].includes(key)){reminders.push(...parseCalReminderSpec(val));return}
-    if(["LIEU","LOCATION","ENDROIT"].includes(key)){location=val;return}
-    if(["NOTE","NOTES","APPORTER","PREPARER"].includes(key)){if(val)noteParts.push(val);return}
-    noteParts.push(field);
-  });
-  reminders=[...new Set(reminders)];
-  return {location,note:noteParts.join(" • "),reminders};
-}
-function parseCalCode(text){
-  const lines=String(text||"").split(/\r?\n/).map(x=>x.trim()).filter(Boolean),items=[],errors=[];
-  lines.forEach((line,i)=>{
-    if(line.startsWith("#")||line.startsWith("//"))return;
-    const p=line.split("|").map(x=>x.trim());if(importKey(p[0])!=="CAL"){errors.push(`Ligne ${i+1}: doit commencer par CAL.`);return}
-    const date=p[1],time=p[2]||"",type=importKey(p[3]),title=p[4]||"";
-    if(!validImportDate(date)||!title){errors.push(`Ligne ${i+1}: date ou titre invalide.`);return}
-    if(date<CALENDAR_FRESH_START){errors.push(`Ligne ${i+1}: date avant le nouveau départ (${CALENDAR_FRESH_START}).`);return}
-    if(["RDV","RENDEZ_VOUS","RENDEZVOUS","APPOINTMENT"].includes(type)){
-      if(time&&!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)){errors.push(`Ligne ${i+1}: heure invalide.`);return}
-      const extra=parseCalAppointmentExtras(p.slice(5));
-      if(extra.reminders.some(r=>r!=="1d")&&!time){errors.push(`Ligne ${i+1}: un rappel en heures/minutes exige une heure de rendez-vous.`);return}
-      items.push({kind:"appointment",date,time,title,note:extra.note,location:extra.location,reminders:extra.reminders.length?extra.reminders:["1d"]});return;
-    }
-    if(["PAIEMENT","PAYMENT","PAYER","FACTURE"].includes(type)){
-      const amount=importTextMoney(p[5]);if(!Number.isFinite(amount)||amount<0){errors.push(`Ligne ${i+1}: montant invalide.`);return}
-      items.push({kind:"payment",date,time:"",title,amount,note:p.slice(6).join(" | ")});return;
-    }
-    errors.push(`Ligne ${i+1}: type ${p[3]||"?"} non reconnu.`);
-  });
-  if(!items.length&&!errors.length)errors.push("Aucune ligne CAL reconnue.");return {items,errors};
-}
-function calDuplicate(item){
-  return (state.bills||[]).some(b=>{
-    if(b.deletedAt||importName(b.name)!==importName(item.title))return false;
-    const occ=billOccurrences(b,item.date,item.date);if(!occ.includes(item.date))return false;
-    if(item.kind==="appointment")return calKind(b)==="appointment"&&String(b.eventTime||"")===String(item.time||"");
-    return calKind(b)==="payment"&&Math.abs(Number(b.amount||0)-Number(item.amount||0))<.01;
-  });
-}
-function openCalImport(){
-  openModal(`${modalHeader("⚡ Import rapide")}<p class="muted small">Colle le code que je t’ai préparé. Date, heure, notes, lieu et rappels d’un RDV se placent automatiquement. Les doublons exacts sont ignorés.</p><div class="cf-code">CAL|2026-11-12|09:30|RDV|Hôpital|Amener carte assurance maladie • Arriver 15 min avant|RAPPEL=1j,2h<br>CAL|2026-11-20||PAIEMENT|Hydro|445</div><label>Code à importer<textarea id="calImportText" rows="10" placeholder="Colle les lignes CAL ici"></textarea></label><button id="calPreviewBtn" class="fullBtn primary">Vérifier avant d’importer</button><div id="calImportPreview"></div>`);
-  document.getElementById("calPreviewBtn").onclick=()=>{
-    const parsed=parseCalCode(document.getElementById("calImportText").value),host=document.getElementById("calImportPreview");
-    const errs=parsed.errors.length?`<div class="card"><strong class="dangerText">⚠️ À corriger</strong><div class="sub">${parsed.errors.map(esc).join("<br>")}</div></div>`:"";
-    const cards=parsed.items.map(x=>{const details=[];if(x.location)details.push(`📍 ${esc(x.location)}`);if(x.note)details.push(`📝 ${esc(x.note)}`);if(x.kind==="appointment"&&x.reminders?.length)details.push(`🔔 ${esc(x.reminders.map(calReminderLabel).join(" + "))}`);return `<div class="card"><strong>${x.kind==="appointment"?"📅":"💸"} ${esc(x.title)}</strong><div class="sub">${esc(calFullDate(x.date))}${x.time?` · ${esc(x.time)}`:""}${x.kind==="payment"?` · ${money(x.amount)}`:""}${calDuplicate(x)?" · Déjà présent":""}</div>${details.length?`<div class="sub" style="margin-top:7px">${details.join("<br>")}</div>`:""}</div>`}).join("");
-    host.innerHTML=`${errs}${cards}${parsed.errors.length?"":`<button id="calConfirmImport" class="fullBtn primary">✅ Importer ${parsed.items.length} élément(s)</button>`}`;
-    const btn=document.getElementById("calConfirmImport");if(btn)btn.onclick=()=>applyCalImport(parsed);
-  };
-}
-function applyCalImport(parsed){
-  if(parsed.errors?.length)return toast("Corrige les erreurs avant l’import");let added=0,skipped=0;
-  parsed.items.forEach(item=>{
-    if(calDuplicate(item)){skipped++;return}
-    if(item.kind==="appointment")state.bills.push({id:uid("bill"),name:item.title,amount:0,dueDay:Number(item.date.slice(8,10))||1,dueDate:item.date,startDate:item.date,category:"Rendez-vous",frequency:"one",variable:false,autopay:false,active:true,statuses:{},activeFrom:item.date,calendarKind:"appointment",eventTime:item.time||"",location:item.location||"",note:item.note||"",reminderOffsets:Array.isArray(item.reminders)&&item.reminders.length?item.reminders:["1d"],createdAt:nowIso(),updatedAt:nowIso()});
-    else state.bills.push({id:uid("bill"),name:item.title,amount:Number(item.amount||0),dueDay:Number(item.date.slice(8,10))||1,dueDate:item.date,startDate:item.date,category:"Paiement",frequency:"one",variable:false,autopay:false,active:true,statuses:{},activeFrom:item.date,calendarKind:"payment",calendarFlexible:true,note:item.note||"",createdAt:nowIso(),updatedAt:nowIso()});
-    added++;
-  });
-  saveState();closeModal();toast(`Import terminé ✅ ${added} ajouté(s)${skipped?` · ${skipped} doublon(s)`:""}`);
-}
-
-
-// ----- Outils du nouveau calendrier -----
-function calendarManagementCard(){
-  return [...document.querySelectorAll("#settingsPage .card")].find(card=>{
-    const h=card.querySelector("h3");
-    const t=(h?.textContent||"").trim();
-    return t==="Gestion"||t==="Outils du calendrier";
-  })||null;
-}
-function renderCalendarSettingsTools(){
-  const card=calendarManagementCard();if(!card)return;
-  card.innerHTML=`
-    <h3>Outils du calendrier</h3>
-    <p class="muted small" style="margin-top:-4px">Les outils utiles pour le nouveau Budget Pack. Ton partage et tes notifications restent intacts.</p>
-    <button type="button" id="calTestNotifBtn" class="fullBtn primary">🔔 Tester mes notifications</button>
-    <button type="button" id="calRecurringBtn" class="fullBtn">🔁 Gérer les paiements récurrents</button>
-    <button type="button" id="calUpcomingRdvBtn" class="fullBtn">📅 Mes prochains rendez-vous</button>
-    <button type="button" id="calCleanDoneBtn" class="fullBtn">🧹 Nettoyer les anciens terminés</button>
-    <div style="height:8px"></div>
-    <button type="button" id="calExportBtn" class="fullBtn">📤 Exporter une sauvegarde</button>
-    <button type="button" id="calImportBackupBtn" class="fullBtn">📥 Importer une sauvegarde</button>
-    <input id="calBackupInput" type="file" accept="application/json" hidden>
-    <details style="margin-top:12px">
-      <summary class="muted small" style="cursor:pointer;padding:8px 2px">Zone avancée</summary>
-      <button type="button" id="calResetBtn" class="fullBtn" style="border-color:rgba(255,107,107,.45);color:var(--danger)">♻️ Réinitialiser le calendrier</button>
-      <div class="sub" style="margin:7px 3px 0">Supprime les RDV et paiements uniques du nouveau calendrier. Les paiements récurrents, le partage et les notifications restent en place.</div>
-    </details>`;
-  document.getElementById("calTestNotifBtn").onclick=testCalendarNotification;
-  document.getElementById("calRecurringBtn").onclick=openRecurringPayments;
-  document.getElementById("calUpcomingRdvBtn").onclick=openUpcomingAppointments;
-  document.getElementById("calCleanDoneBtn").onclick=openCleanCompleted;
-  document.getElementById("calExportBtn").onclick=()=>{exportData();toast("Sauvegarde exportée 📤")};
-  document.getElementById("calImportBackupBtn").onclick=()=>document.getElementById("calBackupInput")?.click();
-  document.getElementById("calBackupInput").onchange=e=>{const f=e.target.files?.[0];if(f)importData(f);e.target.value=""};
-  document.getElementById("calResetBtn").onclick=resetCalendarItems;
-}
-async function testCalendarNotification(){
-  try{
-    if(!("Notification" in window))return toast("Notifications non supportées sur ce téléphone");
-    if(Notification.permission!=="granted"){
-      toast("Active d’abord les notifications avec le gros bouton vert 🔔");
-      return;
-    }
-    const reg=("serviceWorker" in navigator)?await navigator.serviceWorker.ready:null;
-    if(reg?.showNotification){
-      await reg.showNotification("BUDGET PACK 🔔",{body:"Test réussi — tes alertes peuvent s’afficher sur ce téléphone ✅",icon:"icon-192.png",badge:"icon-192.png",tag:"budget-pack-test"});
-    }else{
-      new Notification("BUDGET PACK 🔔",{body:"Test réussi — tes alertes fonctionnent ✅"});
-    }
-    toast("Notification test envoyée 🔔");
-  }catch(e){toast("Impossible d’envoyer le test de notification")}
-}
-function recurringPaymentLabel(b){
-  if(b.frequency==="weekly")return "Chaque semaine";
-  if(b.frequency==="monthly")return `Chaque mois · jour ${Number(b.dueDay||1)}`;
-  return "Récurrent";
-}
-function openRecurringPayments(){
-  const list=(state.bills||[]).filter(b=>b&&!b.deletedAt&&!b.endedAt&&b.frequency!=="one"&&calKind(b)!=="appointment").sort((a,b)=>Number(a.dueDay||99)-Number(b.dueDay||99)||String(a.name||"").localeCompare(String(b.name||""),"fr"));
-  const rows=list.length?list.map(b=>`<div class="card" style="margin-top:8px"><div class="catTop"><strong>${b.active===false?"⏸️":"💸"} ${esc(b.name)}</strong><strong>${money(b.amount)}</strong></div><div class="sub">${esc(recurringPaymentLabel(b))}${b.active===false?" · En pause":""}</div><div class="twoBtns" style="margin-top:8px"><button class="fullBtn" onclick="BP.editRecurringPayment('${b.id}')">✏️ Modifier</button><button class="fullBtn" onclick="BP.toggleRecurringPayment('${b.id}')">${b.active===false?"▶️ Réactiver":"⏸️ Mettre en pause"}</button></div></div>`).join(""):`<div class="card muted">Aucun paiement récurrent.</div>`;
-  openModal(`${modalHeader("🔁 Paiements récurrents")}<p class="muted small">Hydro, assurances, Visa, etc. Tu peux modifier le montant/la date ou mettre un paiement en pause.</p>${rows}`);
-}
-function editRecurringPayment(id){closeModal();billForm(id)}
-function toggleRecurringPayment(id){
-  const b=(state.bills||[]).find(x=>x.id===id);if(!b)return;
-  b.active=b.active===false?true:false;b.updatedAt=nowIso();saveState();openRecurringPayments();toast(b.active?"Paiement réactivé ✅":"Paiement mis en pause ⏸️");
-}
-function openUpcomingAppointments(){
-  const items=calItems(today(),addDays(today(),3650)).filter(x=>x.calKind==="appointment"&&!calIsDone(x));
-  const rows=items.length?items.map(x=>calRow(x,{showDate:true})).join(""):`<div class="card muted">Aucun rendez-vous à venir 🎉</div>`;
-  openModal(`${modalHeader("📅 Mes prochains rendez-vous")}<p class="muted small">Tous tes RDV à venir au même endroit. Tu peux les modifier directement ici.</p>${rows}`);
-}
-function openCleanCompleted(){
-  openModal(`${modalHeader("🧹 Nettoyer les terminés")}<p class="muted small">Supprime seulement les RDV faits et paiements payés <b>avant</b> la date choisie. Les éléments encore à faire ne sont jamais touchés.</p><form id="calCleanDoneForm"><label>Nettoyer les terminés avant le<input name="cutoff" type="date" min="${CALENDAR_FRESH_START}" value="${today()}" required></label><button class="fullBtn primary">🧹 Nettoyer</button></form>`);
-  document.getElementById("calCleanDoneForm").onsubmit=e=>{e.preventDefault();cleanCompletedBefore(new FormData(e.target).get("cutoff"))};
-}
-function cleanCompletedBefore(cutoff){
-  cutoff=String(cutoff||"");if(!validImportDate(cutoff)||cutoff<CALENDAR_FRESH_START)return toast("Date invalide");
-  let count=0;
-  (state.bills||[]).forEach(b=>{
-    if(!b||b.deletedAt)return;
-    if(b.frequency==="one"){
-      const due=b.dueDate||b.startDate||"",st=(b.statuses||{})[due]||{};
-      if(due&&due<cutoff&&st.paidAt){b.deletedAt=nowIso();b.active=false;b.updatedAt=nowIso();count++}
-      return;
-    }
-    const entries=Object.entries(b.statuses||{});let changed=false;
-    entries.forEach(([due,st])=>{if(due<cutoff&&st?.paidAt){delete b.statuses[due];count++;changed=true}});
-    if(changed)b.updatedAt=nowIso();
-  });
-  saveState();closeModal();toast(count?`${count} ancien(s) terminé(s) nettoyé(s) 🧹`:"Rien à nettoyer ✅");
-}
-function resetCalendarItems(){
-  const ok=confirm("♻️ Réinitialiser le calendrier ?\n\nÇa supprimera tous les rendez-vous et paiements UNIQUES du nouveau calendrier.\n\nLes paiements récurrents, le partage et les notifications seront conservés.");
-  if(!ok)return;
-  const ok2=confirm("Dernière confirmation : supprimer tous les RDV et paiements uniques du calendrier ?");if(!ok2)return;
-  let count=0;
-  (state.bills||[]).forEach(b=>{
-    if(!b||b.deletedAt||b.frequency!=="one")return;
-    const due=b.dueDate||b.startDate||"";
-    if(due>=CALENDAR_FRESH_START){b.deletedAt=nowIso();b.active=false;b.updatedAt=nowIso();count++}
-  });
-  saveState();toast(`Calendrier réinitialisé · ${count} élément(s) supprimé(s)`);
-}
-
-// ----- events -----
-function on(id,event,handler){const el=$("#"+id);if(el)el.addEventListener(event,handler)}
-document.addEventListener("click",e=>{
-  const p=e.target.closest("[data-page]");if(p)goPage(p.dataset.page);
-  const a=e.target.closest("[data-add]");if(a)add(a.dataset.add);
-  const g=e.target.closest("[data-go]");if(g)goPage(g.dataset.go);
-});
-on("quickExpenseBtn","click",()=>expenseForm());on("addBillBtn","click",()=>billForm());on("affordBtn","click",afford);on("modalBackdrop","click",e=>{if(e.target.id==="modalBackdrop")closeModal()});
-on("calendarRange","click",e=>{const b=e.target.closest("button");if(!b)return;calendarDays=Number(b.dataset.days);$$("#calendarRange button").forEach(x=>x.classList.toggle("active",x===b));renderCalendar()});
-on("historyFilter","click",e=>{const b=e.target.closest("button");if(!b)return;historyFilter=b.dataset.filter;$$("#historyFilter button").forEach(x=>x.classList.toggle("active",x===b));renderHistory()});
-on("prevMonth","click",()=>{summaryCursor.setMonth(summaryCursor.getMonth()-1);renderSummary()});on("nextMonth","click",()=>{summaryCursor.setMonth(summaryCursor.getMonth()+1);renderSummary()});
-on("shareSummary","click",shareSummary);on("exportBtn","click",exportData);
-["startBalance","startBalanceDate","overdraftLimit","groceryBudget","reminderHour","sundayReminder","dayBeforeReminder","lateReminder","historyMonths"].forEach(id=>on(id,"change",settingsChanged));
-$$("[data-theme]").forEach(b=>b.onclick=()=>applyTheme(b.dataset.theme));
-on("customAccent","change",e=>applyTheme("custom",e.target.value));
-on("apiUrl","change",e=>{profile.apiUrl=e.target.value.trim();saveProfile()});on("memberName","change",e=>{profile.memberName=e.target.value.trim();saveProfile()});
-on("oneSignalAppId","change",e=>{profile.oneSignalAppId=e.target.value.trim();saveProfile()});
-on("createFamilyBtn","click",createFamily);on("joinFamilyBtn","click",joinFamily);on("leaveCloudBtn","click",leaveCloud);on("enablePushBtn","click",enablePush);
-on("addCategoryBudgetBtn","click",addCategoryBudget);
-on("seedBtn","click",()=>{if(confirm("Remettre les factures de départ? Ça n'efface pas tes dépenses.")){state.bills=seedBills();saveState();toast("Factures de départ remises")}});
-on("importBtn","click",()=>$("#importFile")?.click());on("importFile","change",e=>e.target.files[0]&&importData(e.target.files[0]));
-
-window.BP={close:closeModal,payBill,snooze,endBill,deleteBill,quickMerchant:s=>expenseForm(decodeURIComponent(s)),editBill:billForm,addGoalMoney,removeCategoryBudget,editHistory,openMonthlyPlan,receiveIncome,openCalImport,openCalAppointment,openCalPayment,calComplete,calEdit,selectCalDate,shiftCalMonth,setCalFilter,goCal,editRecurringPayment,toggleRecurringPayment};
-
-initTheme();migrateTrackingStart();migrateLegacyPlanRetards();migrateOct2026CombinedRemainders();migrateMonthlyPlansToOperational();applyCalendarFreshStart();dedupeRecurringPayments();render();if("serviceWorker" in navigator)navigator.serviceWorker.register("sw.js").catch(()=>{});
-if(profile.token)pullCloud();if(profile.oneSignalAppId)initOneSignal();
-setInterval(()=>{if(profile.token&&document.visibilityState==="visible")pullCloud()},30000);
-document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible"){if(profile.token)pullCloud();if(profile.oneSignalAppId&&profile.memberId)initOneSignal()}});
 })();
